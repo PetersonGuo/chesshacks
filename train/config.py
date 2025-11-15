@@ -4,7 +4,6 @@ Configuration for NNUE training
 
 import os
 import copy
-import json
 from dataclasses import dataclass
 from typing import Optional
 
@@ -72,7 +71,6 @@ class TrainingConfig:
     download_positions_per_game: int = 10
     download_num_workers: int = 4
     download_batch_size: int = 100
-    download_output_format: str = 'jsonl'
     download_rated_only: bool = True  # Download rated games only
     download_output_dir: str = 'data'  # Output directory for downloaded data
     download_mode: str = 'streaming'  # Download mode: 'streaming' or 'direct'
@@ -144,24 +142,6 @@ LARGE_SCALE_CONFIG = TrainingConfig(
 )
 
 
-def load_download_config():
-    """
-    Load download configuration from download_config.json if it exists
-    
-    Returns:
-        dict with config values, or empty dict if file doesn't exist
-    """
-    config_path = os.path.join(os.path.dirname(__file__), 'download_config.json')
-    if os.path.exists(config_path):
-        try:
-            with open(config_path, 'r') as f:
-                return json.load(f)
-        except (json.JSONDecodeError, IOError) as e:
-            print(f"Warning: Could not load download_config.json: {e}")
-            return {}
-    return {}
-
-
 def get_config(config_name='default'):
     """
     Get a configuration by name
@@ -183,15 +163,6 @@ def get_config(config_name='default'):
         raise ValueError(f"Unknown config: {config_name}. Choose from {list(configs.keys())}")
 
     config = copy.deepcopy(configs[config_name])
-    
-    # Load values from download_config.json if it exists
-    download_config = load_download_config()
-    if download_config:
-        if 'max_games' in download_config:
-            config.download_max_games = download_config['max_games']
-        if 'max_games_searched' in download_config:
-            config.download_max_games_searched = download_config['max_games_searched']
-    
     return config
 
 

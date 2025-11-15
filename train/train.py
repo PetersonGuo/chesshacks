@@ -338,14 +338,11 @@ def ensure_data_exists(config: TrainingConfig) -> bool:
         'stockfish_path': config.stockfish_path,
         'depth': config.download_depth,
         'max_games': config.download_max_games,
-        'max_games_searched': config.download_max_games_searched,
         'positions_per_game': config.download_positions_per_game,
         'max_positions': None,
-        'output_format': config.download_output_format,
         'num_workers': config.download_num_workers,
         'batch_size': config.download_batch_size,
         'download_mode': config.download_mode,
-        'skip_filter': config.download_skip_filter,
         'skip_redownload': config.download_skip_redownload,
     }
     

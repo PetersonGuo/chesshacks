@@ -1,11 +1,10 @@
 """
 Dataset loader for NNUE training
-Supports loading chess positions with evaluations from various formats
+Supports loading chess positions with evaluations from JSONL format
 """
 
 import os
 import json
-import csv
 from typing import Optional, Tuple
 import torch
 from torch.utils.data import Dataset, DataLoader
@@ -18,20 +17,10 @@ class ChessPositionDataset(Dataset):
     """
     PyTorch Dataset for chess positions with evaluations
 
-    Expected data format (CSV):
-        fen,eval
-        rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1,0.15
-        ...
-
-    Expected data format (JSON):
-        [
-            {"fen": "rnbqkbnr/...", "eval": 0.15},
-            ...
-        ]
-
-    Or JSONL (one JSON object per line):
-        {"fen": "rnbqkbnr/...", "eval": 0.15}
+    Expected data format (JSONL - one JSON object per line):
+        {"fen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", "eval": 0.15}
         {"fen": "...", "eval": -0.5}
+        ...
     """
 
     def __init__(self, data_path: str, max_positions: Optional[int] = None):
@@ -39,50 +28,19 @@ class ChessPositionDataset(Dataset):
         Initialize dataset
 
         Args:
-            data_path: Path to data file (CSV, JSON, or JSONL)
+            data_path: Path to JSONL data file
             max_positions: Maximum number of positions to load (None = load all)
         """
         self.data_path = data_path
         self.positions = []
         self.evaluations = []
 
-        # Load data based on file extension
-        if data_path.endswith('.csv'):
-            self._load_csv(data_path, max_positions)
-        elif data_path.endswith('.json'):
-            self._load_json(data_path, max_positions)
-        elif data_path.endswith('.jsonl'):
-            self._load_jsonl(data_path, max_positions)
-        else:
-            raise ValueError(f"Unsupported file format: {data_path}")
-
+        # Load JSONL data
+        if not data_path.endswith('.jsonl'):
+            raise ValueError(f"Only JSONL format is supported. Got: {data_path}")
+        
+        self._load_jsonl(data_path, max_positions)
         print(f"Loaded {len(self.positions)} positions from {data_path}")
-
-    def _load_csv(self, path, max_positions):
-        """Load positions from CSV file"""
-        with open(path, 'r') as f:
-            reader = csv.DictReader(f)
-            for i, row in enumerate(reader):
-                if max_positions and i >= max_positions:
-                    break
-
-                fen = row['fen']
-                eval_score = float(row['eval'])
-
-                self.positions.append(fen)
-                self.evaluations.append(eval_score)
-
-    def _load_json(self, path, max_positions):
-        """Load positions from JSON file"""
-        with open(path, 'r') as f:
-            data = json.load(f)
-
-        for i, item in enumerate(data):
-            if max_positions and i >= max_positions:
-                break
-
-            self.positions.append(item['fen'])
-            self.evaluations.append(float(item['eval']))
 
     def _load_jsonl(self, path, max_positions):
         """Load positions from JSONL file (one JSON per line)"""
@@ -232,51 +190,19 @@ def split_dataset(data_path: str, train_ratio: Optional[float] = None,
     train_indices = indices[:split_idx]
     val_indices = indices[split_idx:]
 
-    # Determine output format from input
-    ext = os.path.splitext(data_path)[1]
-    train_path = os.path.join(output_dir, f'train{ext}')
-    val_path = os.path.join(output_dir, f'val{ext}')
+    # Write train and validation data as JSONL
+    train_path = os.path.join(output_dir, 'train.jsonl')
+    val_path = os.path.join(output_dir, 'val.jsonl')
 
-    # Write train data
-    if ext == '.csv':
-        with open(train_path, 'w', newline='') as f:
-            writer = csv.writer(f)
-            writer.writerow(['fen', 'eval'])
-            for idx in train_indices:
-                writer.writerow([dataset.positions[idx], dataset.evaluations[idx]])
+    with open(train_path, 'w') as f:
+        for idx in train_indices:
+            json.dump({'fen': dataset.positions[idx], 'eval': dataset.evaluations[idx]}, f)
+            f.write('\n')
 
-        with open(val_path, 'w', newline='') as f:
-            writer = csv.writer(f)
-            writer.writerow(['fen', 'eval'])
-            for idx in val_indices:
-                writer.writerow([dataset.positions[idx], dataset.evaluations[idx]])
-
-    elif ext == '.json':
-        train_records = [
-            {'fen': dataset.positions[idx], 'eval': dataset.evaluations[idx]}
-            for idx in train_indices
-        ]
-        val_records = [
-            {'fen': dataset.positions[idx], 'eval': dataset.evaluations[idx]}
-            for idx in val_indices
-        ]
-
-        with open(train_path, 'w') as f:
-            json.dump(train_records, f)
-
-        with open(val_path, 'w') as f:
-            json.dump(val_records, f)
-
-    elif ext == '.jsonl':
-        with open(train_path, 'w') as f:
-            for idx in train_indices:
-                json.dump({'fen': dataset.positions[idx], 'eval': dataset.evaluations[idx]}, f)
-                f.write('\n')
-
-        with open(val_path, 'w') as f:
-            for idx in val_indices:
-                json.dump({'fen': dataset.positions[idx], 'eval': dataset.evaluations[idx]}, f)
-                f.write('\n')
+    with open(val_path, 'w') as f:
+        for idx in val_indices:
+            json.dump({'fen': dataset.positions[idx], 'eval': dataset.evaluations[idx]}, f)
+            f.write('\n')
 
     print(f"Split dataset:")
     print(f"  Train: {len(train_indices)} positions -> {train_path}")
