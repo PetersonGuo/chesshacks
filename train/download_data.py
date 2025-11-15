@@ -142,10 +142,15 @@ def stream_lichess_database(output_dir: Optional[str] = None, year: Optional[int
             print(f"Found existing download: {compressed_path}")
             print(f"Skipping re-download (file size: {os.path.getsize(compressed_path) / (1024**3):.2f} GB)")
             print("Set skip_redownload=False or delete the file to re-download")
-            # Skip to filtering only
+            # If skip_filter is True, return compressed file directly (extract_positions_from_pgn can handle .zst)
+            if skip_filter:
+                print("Skipping filtering - will use compressed file directly for position extraction")
+                return compressed_path
+            # Otherwise, filter the existing download
             return _filter_existing_download(compressed_path, output_path, max_games, max_games_searched,
                                             min_elo, max_elo, start_date, end_date,
-                                            time_control, min_moves, max_moves, result_filter)
+                                            time_control, min_moves, max_moves, result_filter,
+                                            skip_filter=skip_filter)
         elif os.path.exists(output_path):
             print(f"Found existing filtered file: {output_path}")
             print("Skipping download and filtering")
@@ -157,6 +162,21 @@ def stream_lichess_database(output_dir: Optional[str] = None, year: Optional[int
         # Set filters to None when skipping
         min_elo = max_elo = start_date = end_date = None
         time_control = min_moves = max_moves = result_filter = None
+        
+        # When skipping filter, just download the compressed file and return it directly
+        if download_mode == 'direct':
+            print(f"Downloading full database: {filename}...")
+            print(f"URL: {url}")
+            print("Skipping filtering - will use compressed file directly for position extraction")
+            return _direct_download_only(url, compressed_path)
+        else:
+            # For streaming mode with skip_filter, we still need to download the full file
+            # since we can't stream without filtering. Switch to direct mode.
+            print(f"Note: Streaming mode requires filtering. Switching to direct download mode.")
+            print(f"Downloading full database: {filename}...")
+            print(f"URL: {url}")
+            print("Skipping filtering - will use compressed file directly for position extraction")
+            return _direct_download_only(url, compressed_path)
     
     if download_mode == 'direct':
         print(f"Downloading full database: {filename}...")
@@ -181,7 +201,8 @@ def _filter_existing_download(compressed_path: str, output_path: str,
                               min_elo: Optional[int], max_elo: Optional[int],
                               start_date: Optional[str], end_date: Optional[str],
                               time_control: Optional[str], min_moves: Optional[int],
-                              max_moves: Optional[int], result_filter: Optional[str]) -> str:
+                              max_moves: Optional[int], result_filter: Optional[str],
+                              skip_filter: bool = False) -> str:
     """
     Filter an already downloaded compressed file
     """
@@ -192,7 +213,13 @@ def _filter_existing_download(compressed_path: str, output_path: str,
             "zstandard package is required. Install it with: pip install zstandard"
         )
     
-    print("Filtering games from existing downloaded file...")
+    if skip_filter:
+        print("Skipping filtering - copying all games from existing downloaded file...")
+        # When skipping filter, just copy all games without filtering
+        min_elo = max_elo = start_date = end_date = None
+        time_control = min_moves = max_moves = result_filter = None
+    else:
+        print("Filtering games from existing downloaded file...")
     
     # Filter the downloaded file
     dctx = zstd.ZstdDecompressor()
@@ -223,7 +250,8 @@ def _filter_existing_download(compressed_path: str, output_path: str,
                         games_found += 1
                         pbar.update(1)
                         
-                        if should_include_game(game, min_elo, max_elo, start_date,
+                        # If skip_filter is True, include all games; otherwise check filters
+                        if skip_filter or should_include_game(game, min_elo, max_elo, start_date,
                                               end_date, time_control, min_moves,
                                               max_moves, result_filter):
                             exporter = chess.pgn.StringExporter(headers=True, variations=True, comments=True)
@@ -240,6 +268,38 @@ def _filter_existing_download(compressed_path: str, output_path: str,
     print(f"Saved to: {output_path}")
     
     return output_path
+
+
+def _direct_download_only(url: str, compressed_path: str) -> str:
+    """
+    Download the compressed file only, without filtering
+    
+    Args:
+        url: URL to download from
+        compressed_path: Path to save the compressed file
+    
+    Returns:
+        Path to the compressed file
+    """
+    print(f"Downloading to: {compressed_path}")
+    response = requests.get(url, stream=True)
+    response.raise_for_status()
+    
+    # Get file size for progress bar
+    total_size = int(response.headers.get('content-length', 0))
+    
+    with open(compressed_path, 'wb') as f:
+        with tqdm(total=total_size, unit='B', unit_scale=True, desc="Downloading") as pbar:
+            for chunk in response.iter_content(chunk_size=8192):
+                if chunk:
+                    f.write(chunk)
+                    pbar.update(len(chunk))
+    
+    print(f"\nDownload complete. File size: {os.path.getsize(compressed_path) / (1024**3):.2f} GB")
+    print(f"Saved to: {compressed_path}")
+    print("Skipping filtering - will use compressed file directly for position extraction")
+    
+    return compressed_path
 
 
 def _direct_download_and_filter(url: str, filename: str, output_path: str, output_dir: str,
