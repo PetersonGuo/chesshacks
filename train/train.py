@@ -3,6 +3,7 @@ Main training script for NNUE chess evaluation model
 """
 
 import os
+import sys
 import random
 import numpy as np
 import torch
@@ -12,11 +13,21 @@ from tqdm import tqdm
 import threading
 from typing import List, Optional, Tuple, Dict
 
-from .model import NNUEModel, count_parameters
-from .dataset import create_dataloaders, split_dataset
-from .config import get_config, TrainingConfig
-from .download_data import download_and_process_lichess_data
-from .upload_to_hf import upload_model_to_hf
+# Handle both direct execution and package import
+try:
+    from .model import NNUEModel, count_parameters
+    from .dataset import create_dataloaders, split_dataset
+    from .config import get_config, TrainingConfig
+    from .download_data import download_and_process_lichess_data
+    from .upload_to_hf import upload_model_to_hf
+except ImportError:
+    # Add parent directory to path for direct execution
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from train.model import NNUEModel, count_parameters
+    from train.dataset import create_dataloaders, split_dataset
+    from train.config import get_config, TrainingConfig
+    from train.download_data import download_and_process_lichess_data
+    from train.upload_to_hf import upload_model_to_hf
 
 
 def set_seed(seed: int) -> None:
