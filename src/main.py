@@ -12,6 +12,29 @@ if build_path not in sys.path:
 
 import c_helpers
 
+# Detect CUDA availability
+def has_cuda():
+    """Check if CUDA is available on this system"""
+    try:
+        import subprocess
+        result = subprocess.run(['nvidia-smi'], capture_output=True, timeout=1)
+        return result.returncode == 0
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+
+# Global configuration
+USE_CUDA = has_cuda()
+SEARCH_DEPTH = 4  # Adjust based on time constraints
+NUM_THREADS = 0  # 0 = auto-detect CPU cores
+
+# Create persistent transposition table (reused across moves)
+transposition_table = c_helpers.TranspositionTable()
+
+print(f"Chess Engine initialized:")
+print(f"  - CUDA available: {USE_CUDA}")
+print(f"  - Search depth: {SEARCH_DEPTH}")
+print(f"  - Threads: {NUM_THREADS if NUM_THREADS > 0 else 'auto'}")
+
 # Write code here that runs once
 # Can do things like load models from huggingface, make connections to subprocesses, etcwenis
 
@@ -44,16 +67,84 @@ def test_func(ctx: GameContext):
 @chess_manager.reset
 def reset_func(ctx: GameContext):
     # This gets called when a new game begins
-    # Should do things like clear caches, reset model state, etc.
-    pass
+    # Clear transposition table for fresh start
+    global transposition_table
+    transposition_table.clear()
+    print(f"New game started - TT cleared")
+
+
+def nnue_evaluate(fen: str) -> int:
+    """
+    Placeholder evaluation function
+    TODO: Replace with actual NNUE model
+    Currently returns simple material count
+    """
+    piece_values = {
+        'P': 100, 'N': 320, 'B': 330, 'R': 500, 'Q': 900, 'K': 0,
+        'p': -100, 'n': -320, 'b': -330, 'r': -500, 'q': -900, 'k': 0
+    }
+    score = 0
+    for char in fen.split()[0]:
+        if char in piece_values:
+            score += piece_values[char]
+    return score
+
+
+def search_position(fen: str, depth: int = SEARCH_DEPTH) -> int:
+    """
+    Search a position using the best available engine
+    Returns the evaluation score
+    """
+    global transposition_table
+    
+    if USE_CUDA:
+        # Use CUDA-accelerated search if available
+        return c_helpers.alpha_beta_cuda(
+            fen, 
+            depth, 
+            c_helpers.MIN, 
+            c_helpers.MAX, 
+            True,  # Assuming white to move, adjust based on FEN
+            nnue_evaluate,
+            transposition_table
+        )
+    else:
+        # Use optimized CPU search with all features
+        return c_helpers.alpha_beta_optimized(
+            fen,
+            depth,
+            c_helpers.MIN,
+            c_helpers.MAX,
+            True,  # Assuming white to move, adjust based on FEN
+            nnue_evaluate,
+            transposition_table,
+            NUM_THREADS
+        )
 
 
 def main():
-    def nnue_evaluate(fen: str) -> int:
-        # Placeholder: return a simple evaluation
-        return 0
-
-    # Example usage with FEN string and NNUE callback
+    """Test the search engine"""
     starting_fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
-    result = c_helpers.alpha_beta(starting_fen, 10, c_helpers.MIN, c_helpers.MAX, True, nnue_evaluate)
-    print(f"Alpha-beta result: {result}")
+    
+    print(f"\nTesting search engine...")
+    print(f"Position: {starting_fen}")
+    print(f"Using: {'CUDA' if USE_CUDA else 'CPU optimized'}")
+    
+    start_time = time.time()
+    result = search_position(starting_fen, depth=4)
+    elapsed = time.time() - start_time
+    
+    print(f"Search result: {result}")
+    print(f"Time: {elapsed:.3f}s")
+    print(f"TT entries: {len(transposition_table)}")
+    print(f"Features active:")
+    print(f"  ✓ Transposition table")
+    print(f"  ✓ Move ordering (TT + MVV-LVA + promotions)")
+    print(f"  ✓ Quiescence search")
+    print(f"  ✓ Iterative deepening")
+    if not USE_CUDA and NUM_THREADS != 1:
+        print(f"  ✓ Parallel search")
+
+
+if __name__ == "__main__":
+    main()

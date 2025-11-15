@@ -51,6 +51,10 @@ public:
   bool is_checkmate() const;
   bool is_stalemate() const;
 
+  // Piece access for move ordering
+  Piece get_piece_at(int square) const { return board[square]; }
+  bool is_capture(const Move &move) const { return board[move.to] != EMPTY; }
+
 private:
   std::array<Piece, 64> board;
   bool white_to_move;
