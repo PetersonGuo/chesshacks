@@ -145,7 +145,8 @@ def stream_lichess_database(output_dir: Optional[str] = None, year: Optional[int
             # Skip to filtering only
             return _filter_existing_download(compressed_path, output_path, max_games, max_games_searched,
                                             min_elo, max_elo, start_date, end_date,
-                                            time_control, min_moves, max_moves, result_filter)
+                                            time_control, min_moves, max_moves, result_filter,
+                                            skip_filter=skip_filter)
         elif os.path.exists(output_path):
             print(f"Found existing filtered file: {output_path}")
             print("Skipping download and filtering")
@@ -181,7 +182,8 @@ def _filter_existing_download(compressed_path: str, output_path: str,
                               min_elo: Optional[int], max_elo: Optional[int],
                               start_date: Optional[str], end_date: Optional[str],
                               time_control: Optional[str], min_moves: Optional[int],
-                              max_moves: Optional[int], result_filter: Optional[str]) -> str:
+                              max_moves: Optional[int], result_filter: Optional[str],
+                              skip_filter: bool = False) -> str:
     """
     Filter an already downloaded compressed file
     """
@@ -192,7 +194,13 @@ def _filter_existing_download(compressed_path: str, output_path: str,
             "zstandard package is required. Install it with: pip install zstandard"
         )
     
-    print("Filtering games from existing downloaded file...")
+    if skip_filter:
+        print("Skipping filtering - copying all games from existing downloaded file...")
+        # When skipping filter, just copy all games without filtering
+        min_elo = max_elo = start_date = end_date = None
+        time_control = min_moves = max_moves = result_filter = None
+    else:
+        print("Filtering games from existing downloaded file...")
     
     # Filter the downloaded file
     dctx = zstd.ZstdDecompressor()
@@ -223,7 +231,8 @@ def _filter_existing_download(compressed_path: str, output_path: str,
                         games_found += 1
                         pbar.update(1)
                         
-                        if should_include_game(game, min_elo, max_elo, start_date,
+                        # If skip_filter is True, include all games; otherwise check filters
+                        if skip_filter or should_include_game(game, min_elo, max_elo, start_date,
                                               end_date, time_control, min_moves,
                                               max_moves, result_filter):
                             exporter = chess.pgn.StringExporter(headers=True, variations=True, comments=True)

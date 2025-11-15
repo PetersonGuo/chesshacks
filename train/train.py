@@ -354,6 +354,9 @@ def ensure_data_exists(config: TrainingConfig) -> bool:
         'result_filter': config.download_result_filter,
         'min_ply': config.download_min_ply,
         'max_ply': config.download_max_ply,
+        'skip_filter': config.download_skip_filter,
+        'skip_redownload': config.download_skip_redownload,
+        'subset_ratio': config.download_subset_ratio,
     }
     
     try:
