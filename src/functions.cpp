@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <future>
+#include <iostream>
 #include <thread>
 #include <vector>
 
@@ -24,15 +25,15 @@ std::string get_cuda_info() {
 #ifdef __CUDACC__
   int device_count = 0;
   cudaError_t error = cudaGetDeviceCount(&device_count);
-  
+
   if (error != cudaSuccess || device_count == 0) {
     return "CUDA not available";
   }
-  
+
   cudaDeviceProp prop;
   cudaGetDeviceProperties(&prop, 0);
-  
-  return std::string(prop.name) + " (CUDA Compute " + 
+
+  return std::string(prop.name) + " (CUDA Compute " +
          std::to_string(prop.major) + "." + std::to_string(prop.minor) + ")";
 #else
   return "CUDA not compiled (use nvcc to enable)";
@@ -44,18 +45,21 @@ std::string get_cuda_info() {
 // ============================================================================
 
 void KillerMoves::store(int ply, const std::string &move_fen) {
-  if (ply >= MAX_DEPTH) return;
-  
+  if (ply >= MAX_DEPTH)
+    return;
+
   // Don't store duplicates
-  if (killers[ply][0] == move_fen) return;
-  
+  if (killers[ply][0] == move_fen)
+    return;
+
   // Shift: second killer becomes first, new move becomes second
   killers[ply][1] = killers[ply][0];
   killers[ply][0] = move_fen;
 }
 
 bool KillerMoves::is_killer(int ply, const std::string &move_fen) const {
-  if (ply >= MAX_DEPTH) return false;
+  if (ply >= MAX_DEPTH)
+    return false;
   return killers[ply][0] == move_fen || killers[ply][1] == move_fen;
 }
 
@@ -71,13 +75,15 @@ void KillerMoves::clear() {
 // ============================================================================
 
 void HistoryTable::update(int piece, int to_square, int depth) {
-  if (to_square < 0 || to_square >= 64) return;
+  if (to_square < 0 || to_square >= 64)
+    return;
   int idx = piece + 6; // Map -6..6 to 0..12
-  if (idx < 0 || idx >= 13) return;
-  
+  if (idx < 0 || idx >= 13)
+    return;
+
   // Reward based on depth (deeper moves are more valuable)
   history[idx][to_square] += depth * depth;
-  
+
   // Cap to prevent overflow
   if (history[idx][to_square] > 100000) {
     age(); // Age all values when one gets too high
@@ -85,9 +91,11 @@ void HistoryTable::update(int piece, int to_square, int depth) {
 }
 
 int HistoryTable::get_score(int piece, int to_square) const {
-  if (to_square < 0 || to_square >= 64) return 0;
+  if (to_square < 0 || to_square >= 64)
+    return 0;
   int idx = piece + 6;
-  if (idx < 0 || idx >= 13) return 0;
+  if (idx < 0 || idx >= 13)
+    return 0;
   return history[idx][to_square];
 }
 
@@ -104,6 +112,85 @@ void HistoryTable::age() {
   for (int i = 0; i < 13; i++) {
     for (int j = 0; j < 64; j++) {
       history[i][j] /= 2;
+    }
+  }
+}
+
+// ============================================================================
+// COUNTER MOVE TABLE IMPLEMENTATION
+// ============================================================================
+void CounterMoveTable::store(int piece, int to_square,
+                             const std::string &counter_move_fen) {
+  std::string key = make_key(piece, to_square);
+  counters[key] = counter_move_fen;
+}
+
+std::string CounterMoveTable::get_counter(int piece, int to_square) const {
+  std::string key = make_key(piece, to_square);
+  auto it = counters.find(key);
+  if (it != counters.end()) {
+    return it->second;
+  }
+  return "";
+}
+
+void CounterMoveTable::clear() { counters.clear(); }
+
+// ============================================================================
+// CONTINUATION HISTORY IMPLEMENTATION
+// ============================================================================
+void ContinuationHistory::update(int prev_piece, int prev_to, int curr_piece,
+                                 int curr_to, int depth) {
+  int prev_idx = prev_piece + 6;
+  int curr_idx = curr_piece + 6;
+
+  if (prev_idx < 0 || prev_idx >= 13 || prev_to < 0 || prev_to >= 64 ||
+      curr_idx < 0 || curr_idx >= 13 || curr_to < 0 || curr_to >= 64) {
+    return;
+  }
+
+  cont_history[prev_idx][prev_to][curr_idx][curr_to] += depth * depth;
+
+  // Cap to prevent overflow
+  if (cont_history[prev_idx][prev_to][curr_idx][curr_to] > 100000) {
+    age();
+  }
+}
+
+int ContinuationHistory::get_score(int prev_piece, int prev_to, int curr_piece,
+                                   int curr_to) const {
+  int prev_idx = prev_piece + 6;
+  int curr_idx = curr_piece + 6;
+
+  if (prev_idx < 0 || prev_idx >= 13 || prev_to < 0 || prev_to >= 64 ||
+      curr_idx < 0 || curr_idx >= 13 || curr_to < 0 || curr_to >= 64) {
+    return 0;
+  }
+
+  return cont_history[prev_idx][prev_to][curr_idx][curr_to];
+}
+
+void ContinuationHistory::clear() {
+  for (int i = 0; i < 13; i++) {
+    for (int j = 0; j < 64; j++) {
+      for (int k = 0; k < 13; k++) {
+        for (int l = 0; l < 64; l++) {
+          cont_history[i][j][k][l] = 0;
+        }
+      }
+    }
+  }
+}
+
+void ContinuationHistory::age() {
+  // Divide all values by 2 to favor recent patterns
+  for (int i = 0; i < 13; i++) {
+    for (int j = 0; j < 64; j++) {
+      for (int k = 0; k < 13; k++) {
+        for (int l = 0; l < 64; l++) {
+          cont_history[i][j][k][l] /= 2;
+        }
+      }
     }
   }
 }
@@ -166,6 +253,15 @@ size_t TranspositionTable::size() const {
   return table.size();
 }
 
+std::string TranspositionTable::get_best_move(const std::string &fen) const {
+  std::lock_guard<std::mutex> lock(mutex);
+  auto it = table.find(fen);
+  if (it == table.end()) {
+    return "";
+  }
+  return it->second.best_move_fen;
+}
+
 // ============================================================================
 // MOVE ORDERING HELPERS
 // ============================================================================
@@ -173,95 +269,75 @@ size_t TranspositionTable::size() const {
 // Piece-Square Tables for positional evaluation
 // Tables are from white's perspective (flipped for black)
 namespace PieceSquareTables {
-  // Pawn
-  const int pawn_table[64] = {
-      0,  0,  0,  0,  0,  0,  0,  0,
-     50, 50, 50, 50, 50, 50, 50, 50,
-     10, 10, 20, 30, 30, 20, 10, 10,
-      5,  5, 10, 25, 25, 10,  5,  5,
-      0,  0,  0, 20, 20,  0,  0,  0,
-      5, -5,-10,  0,  0,-10, -5,  5,
-      5, 10, 10,-20,-20, 10, 10,  5,
-      0,  0,  0,  0,  0,  0,  0,  0
-  };
-  
-  // Knight
-  const int knight_table[64] = {
-    -50,-40,-30,-30,-30,-30,-40,-50,
-    -40,-20,  0,  0,  0,  0,-20,-40,
-    -30,  0, 10, 15, 15, 10,  0,-30,
-    -30,  5, 15, 20, 20, 15,  5,-30,
-    -30,  0, 15, 20, 20, 15,  0,-30,
-    -30,  5, 10, 15, 15, 10,  5,-30,
-    -40,-20,  0,  5,  5,  0,-20,-40,
-    -50,-40,-30,-30,-30,-30,-40,-50
-  };
-  
-  // Bishop
-  const int bishop_table[64] = {
-    -20,-10,-10,-10,-10,-10,-10,-20,
-    -10,  0,  0,  0,  0,  0,  0,-10,
-    -10,  0,  5, 10, 10,  5,  0,-10,
-    -10,  5,  5, 10, 10,  5,  5,-10,
-    -10,  0, 10, 10, 10, 10,  0,-10,
-    -10, 10, 10, 10, 10, 10, 10,-10,
-    -10,  5,  0,  0,  0,  0,  5,-10,
-    -20,-10,-10,-10,-10,-10,-10,-20
-  };
-  
-  // Rook
-  const int rook_table[64] = {
-      0,  0,  0,  0,  0,  0,  0,  0,
-      5, 10, 10, 10, 10, 10, 10,  5,
-     -5,  0,  0,  0,  0,  0,  0, -5,
-     -5,  0,  0,  0,  0,  0,  0, -5,
-     -5,  0,  0,  0,  0,  0,  0, -5,
-     -5,  0,  0,  0,  0,  0,  0, -5,
-     -5,  0,  0,  0,  0,  0,  0, -5,
-      0,  0,  0,  5,  5,  0,  0,  0
-  };
-  
-  // Queen
-  const int queen_table[64] = {
-    -20,-10,-10, -5, -5,-10,-10,-20,
-    -10,  0,  0,  0,  0,  0,  0,-10,
-    -10,  0,  5,  5,  5,  5,  0,-10,
-     -5,  0,  5,  5,  5,  5,  0, -5,
-      0,  0,  5,  5,  5,  5,  0, -5,
-    -10,  5,  5,  5,  5,  5,  0,-10,
-    -10,  0,  5,  0,  0,  0,  0,-10,
-    -20,-10,-10, -5, -5,-10,-10,-20
-  };
-  
-  // King middlegame
-  const int king_middlegame_table[64] = {
-    -30,-40,-40,-50,-50,-40,-40,-30,
-    -30,-40,-40,-50,-50,-40,-40,-30,
-    -30,-40,-40,-50,-50,-40,-40,-30,
-    -30,-40,-40,-50,-50,-40,-40,-30,
-    -20,-30,-30,-40,-40,-30,-30,-20,
-    -10,-20,-20,-20,-20,-20,-20,-10,
-     20, 20,  0,  0,  0,  0, 20, 20,
-     20, 30, 10,  0,  0, 10, 30, 20
-  };
-}
+// Pawn
+const int pawn_table[64] = {
+    0,  0,  0,  0,   0,   0,  0,  0,  50, 50, 50,  50, 50, 50,  50, 50,
+    10, 10, 20, 30,  30,  20, 10, 10, 5,  5,  10,  25, 25, 10,  5,  5,
+    0,  0,  0,  20,  20,  0,  0,  0,  5,  -5, -10, 0,  0,  -10, -5, 5,
+    5,  10, 10, -20, -20, 10, 10, 5,  0,  0,  0,   0,  0,  0,   0,  0};
+
+// Knight
+const int knight_table[64] = {
+    -50, -40, -30, -30, -30, -30, -40, -50, -40, -20, 0,   0,   0,
+    0,   -20, -40, -30, 0,   10,  15,  15,  10,  0,   -30, -30, 5,
+    15,  20,  20,  15,  5,   -30, -30, 0,   15,  20,  20,  15,  0,
+    -30, -30, 5,   10,  15,  15,  10,  5,   -30, -40, -20, 0,   5,
+    5,   0,   -20, -40, -50, -40, -30, -30, -30, -30, -40, -50};
+
+// Bishop
+const int bishop_table[64] = {
+    -20, -10, -10, -10, -10, -10, -10, -20, -10, 0,   0,   0,   0,
+    0,   0,   -10, -10, 0,   5,   10,  10,  5,   0,   -10, -10, 5,
+    5,   10,  10,  5,   5,   -10, -10, 0,   10,  10,  10,  10,  0,
+    -10, -10, 10,  10,  10,  10,  10,  10,  -10, -10, 5,   0,   0,
+    0,   0,   5,   -10, -20, -10, -10, -10, -10, -10, -10, -20};
+
+// Rook
+const int rook_table[64] = {0,  0,  0, 0,  0, 0,  0,  0, 5,  10, 10, 10, 10,
+                            10, 10, 5, -5, 0, 0,  0,  0, 0,  0,  -5, -5, 0,
+                            0,  0,  0, 0,  0, -5, -5, 0, 0,  0,  0,  0,  0,
+                            -5, -5, 0, 0,  0, 0,  0,  0, -5, -5, 0,  0,  0,
+                            0,  0,  0, -5, 0, 0,  0,  5, 5,  0,  0,  0};
+
+// Queen
+const int queen_table[64] = {
+    -20, -10, -10, -5, -5, -10, -10, -20, -10, 0,   0,   0,  0,  0,   0,   -10,
+    -10, 0,   5,   5,  5,  5,   0,   -10, -5,  0,   5,   5,  5,  5,   0,   -5,
+    0,   0,   5,   5,  5,  5,   0,   -5,  -10, 5,   5,   5,  5,  5,   0,   -10,
+    -10, 0,   5,   0,  0,  0,   0,   -10, -20, -10, -10, -5, -5, -10, -10, -20};
+
+// King middlegame
+const int king_middlegame_table[64] = {
+    -30, -40, -40, -50, -50, -40, -40, -30, -30, -40, -40, -50, -50,
+    -40, -40, -30, -30, -40, -40, -50, -50, -40, -40, -30, -30, -40,
+    -40, -50, -50, -40, -40, -30, -20, -30, -30, -40, -40, -30, -30,
+    -20, -10, -20, -20, -20, -20, -20, -20, -10, 20,  20,  0,   0,
+    0,   0,   20,  20,  20,  30,  10,  0,   0,   10,  30,  20};
+} // namespace PieceSquareTables
 
 // Get piece-square table value
 int get_piece_square_value(Piece piece, int square) {
   int abs_piece = piece < 0 ? -piece : piece;
   bool is_white = piece > 0;
-  
+
   // Flip square for black pieces (mirror vertically)
   int eval_square = is_white ? square : (63 - square);
-  
+
   switch (abs_piece) {
-    case 1: return PieceSquareTables::pawn_table[eval_square];      // Pawn
-    case 2: return PieceSquareTables::knight_table[eval_square];    // Knight
-    case 3: return PieceSquareTables::bishop_table[eval_square];    // Bishop
-    case 4: return PieceSquareTables::rook_table[eval_square];      // Rook
-    case 5: return PieceSquareTables::queen_table[eval_square];     // Queen
-    case 6: return PieceSquareTables::king_middlegame_table[eval_square]; // King
-    default: return 0;
+  case 1:
+    return PieceSquareTables::pawn_table[eval_square]; // Pawn
+  case 2:
+    return PieceSquareTables::knight_table[eval_square]; // Knight
+  case 3:
+    return PieceSquareTables::bishop_table[eval_square]; // Bishop
+  case 4:
+    return PieceSquareTables::rook_table[eval_square]; // Rook
+  case 5:
+    return PieceSquareTables::queen_table[eval_square]; // Queen
+  case 6:
+    return PieceSquareTables::king_middlegame_table[eval_square]; // King
+  default:
+    return 0;
   }
 }
 
@@ -277,9 +353,9 @@ int get_piece_value(Piece piece) {
 int evaluate_with_pst(const std::string &fen) {
   ChessBoard board;
   board.from_fen(fen);
-  
+
   int score = 0;
-  
+
   // Evaluate all pieces on the board
   for (int square = 0; square < 64; square++) {
     Piece piece = board.get_piece_at(square);
@@ -288,7 +364,7 @@ int evaluate_with_pst(const std::string &fen) {
       int material = get_piece_value(piece);
       // Positional bonus from piece-square tables
       int positional = get_piece_square_value(piece, square);
-      
+
       // Add to score (white pieces are positive, black are negative)
       if (piece > 0) {
         score += material + positional;
@@ -297,7 +373,7 @@ int evaluate_with_pst(const std::string &fen) {
       }
     }
   }
-  
+
   return score;
 }
 
@@ -310,6 +386,9 @@ int mvv_lva_score(const ChessBoard &board, const Move &move) {
   // Victim value * 10 - attacker value (prefer capturing with low-value pieces)
   return get_piece_value(victim) * 10 - get_piece_value(attacker);
 }
+
+// Forward declaration
+int static_exchange_eval(ChessBoard &board, const Move &move);
 
 // Order moves for better alpha-beta pruning
 void order_moves(ChessBoard &board, std::vector<Move> &moves,
@@ -343,8 +422,17 @@ void order_moves(ChessBoard &board, std::vector<Move> &moves,
       // Killer moves (good quiet moves from sibling nodes)
       score = 850000;
     } else if (board.is_capture(move)) {
-      // Captures ordered by MVV-LVA
-      score = 800000 + mvv_lva_score(board, move);
+      // Captures ordered by SEE (Static Exchange Evaluation)
+      int see_score = static_exchange_eval(board, move);
+
+      // Prioritize winning/even captures, penalize losing captures
+      if (see_score >= 0) {
+        // Good capture: base score + SEE value
+        score = 800000 + see_score;
+      } else {
+        // Bad capture (lose material): still try but with lower priority
+        score = 700000 + see_score;
+      }
     } else {
       // Quiet moves - use history heuristic if available
       if (history) {
@@ -374,6 +462,58 @@ void order_moves(ChessBoard &board, std::vector<Move> &moves,
 }
 
 // ============================================================================
+// STATIC EXCHANGE EVALUATION (SEE)
+// ============================================================================
+
+// Calculate the expected material outcome of a capture sequence
+// Returns the expected gain/loss in centipawns
+int static_exchange_eval(ChessBoard &board, const Move &move) {
+  // Get piece values
+  auto get_value = [](Piece p) -> int {
+    int abs_p = abs(p);
+    switch (abs_p) {
+    case 1:
+      return 100; // Pawn
+    case 2:
+      return 320; // Knight
+    case 3:
+      return 330; // Bishop
+    case 4:
+      return 500; // Rook
+    case 5:
+      return 900; // Queen
+    case 6:
+      return 20000; // King
+    default:
+      return 0;
+    }
+  };
+
+  Piece attacker = board.get_piece_at(move.from);
+  Piece victim = board.get_piece_at(move.to);
+
+  if (victim == EMPTY) {
+    return 0; // Not a capture
+  }
+
+  // Initial gain from capturing the victim
+  int gain = get_value(victim);
+
+  // Simulate the attacker being captured
+  int loss = get_value(attacker);
+
+  // Simple SEE: assume best case for opponent (they recapture)
+  // More advanced would simulate full exchange sequence
+  // For now, return gain - potential loss if piece is undefended
+
+  // Simplification: if it's a favorable trade, return positive
+  // Pawn takes queen: 900 gain, 100 loss = +800
+  // Queen takes pawn: 100 gain, 900 loss = -800 (if recaptured)
+
+  return gain - loss; // Pessimistic: assume we'll be recaptured
+}
+
+// ============================================================================
 // QUIESCENCE SEARCH
 // ============================================================================
 
@@ -386,7 +526,7 @@ int quiescence_search(ChessBoard &board, int alpha, int beta,
   if (q_depth >= max_q_depth) {
     return evaluate(board.to_fen());
   }
-  
+
   // Stand-pat evaluation
   std::string fen = board.to_fen();
   int stand_pat = evaluate(fen);
@@ -426,9 +566,10 @@ int quiescence_search(ChessBoard &board, int alpha, int beta,
     int maxEval = stand_pat;
     for (const Move &move : captures) {
       board.make_move(move);
-      int eval = quiescence_search(board, alpha, beta, false, evaluate, q_depth + 1, max_q_depth);
+      int eval = quiescence_search(board, alpha, beta, false, evaluate,
+                                   q_depth + 1, max_q_depth);
       board.unmake_move(move);
-      
+
       maxEval = std::max(maxEval, eval);
       alpha = std::max(alpha, eval);
       if (beta <= alpha) {
@@ -440,8 +581,10 @@ int quiescence_search(ChessBoard &board, int alpha, int beta,
     int minEval = stand_pat;
     for (const Move &move : captures) {
       board.make_move(move);
-      int eval = quiescence_search(board, alpha, beta, true, evaluate, q_depth + 1, max_q_depth);
-      board.unmake_move(move);      minEval = std::min(minEval, eval);
+      int eval = quiescence_search(board, alpha, beta, true, evaluate,
+                                   q_depth + 1, max_q_depth);
+      board.unmake_move(move);
+      minEval = std::min(minEval, eval);
       beta = std::min(beta, eval);
       if (beta <= alpha) {
         break; // Alpha cutoff
@@ -523,7 +666,8 @@ alpha_beta_internal(const std::string &fen, int depth, int alpha, int beta,
                     const std::function<int(const std::string &)> &evaluate,
                     TranspositionTable &tt, bool use_quiescence = true,
                     KillerMoves *killers = nullptr, int ply = 0,
-                    HistoryTable *history = nullptr, bool allow_null_move = true) {
+                    HistoryTable *history = nullptr,
+                    bool allow_null_move = true) {
   // Check transposition table
   int cached_score;
   std::string tt_best_move;
@@ -540,15 +684,33 @@ alpha_beta_internal(const std::string &fen, int depth, int alpha, int beta,
     if (all_moves.size() > 3) { // Not in severe endgame
       // Make null move (skip turn)
       int R = 2; // Reduction factor
-      std::string null_fen = fen; // Simplified: in real chess, would flip side to move
-      
+      std::string null_fen =
+          fen; // Simplified: in real chess, would flip side to move
+
       // Try shallow search with null move
-      int null_score = -alpha_beta_internal(null_fen, depth - 1 - R, -beta, -beta + 1,
-                                           !maximizingPlayer, evaluate, tt, use_quiescence,
-                                           killers, ply + 1, history, false);
-      
+      int null_score = -alpha_beta_internal(
+          null_fen, depth - 1 - R, -beta, -beta + 1, !maximizingPlayer,
+          evaluate, tt, use_quiescence, killers, ply + 1, history, false);
+
       if (null_score >= beta) {
         return beta; // Null move cutoff
+      }
+    }
+  }
+
+  // Razoring - prune at low depths when evaluation is far below alpha
+  if (!board.is_check() && depth <= 3 && depth > 0) {
+    int static_eval = evaluate(fen);
+    int razor_margin = 300 * depth; // More aggressive at lower depths
+
+    if (static_eval + razor_margin < alpha) {
+      // Position is so bad that even with margin, unlikely to raise alpha
+      // Do a quiescence search to verify
+      int q_score =
+          quiescence_search(board, alpha, beta, maximizingPlayer, evaluate);
+
+      if (q_score + razor_margin < alpha) {
+        return q_score; // Confirmed bad position, return quiescence score
       }
     }
   }
@@ -587,9 +749,72 @@ alpha_beta_internal(const std::string &fen, int depth, int alpha, int beta,
     // Do a reduced depth search to populate TT with a best move
     int iid_depth = depth - 2;
     alpha_beta_internal(fen, iid_depth, alpha, beta, maximizingPlayer, evaluate,
-                       tt, use_quiescence, killers, ply, history, allow_null_move);
+                        tt, use_quiescence, killers, ply, history,
+                        allow_null_move);
     // After this search, the TT should have a best move for this position
     tt.probe(fen, iid_depth, alpha, beta, cached_score, tt_best_move);
+  }
+
+  // Singular Extensions
+  // If we have a TT move and it appears significantly better than alternatives,
+  // extend the search depth for this node
+  int extension = 0;
+  if (!tt_best_move.empty() && depth >= 6) {
+    // Perform a reduced search excluding the TT move
+    // to see if any other move comes close
+    int singular_beta = cached_score - depth * 2; // Margin for singularity
+    int singular_depth = depth / 2;
+
+    // Search all moves except the TT move with reduced depth
+    int best_alternative = MIN;
+    for (const Move &move : legal_moves) {
+      board.make_move(move);
+      std::string child_fen = board.to_fen();
+
+      // Skip the TT best move - we're testing if alternatives are worse
+      // Compare position without move clocks
+      auto last_space = child_fen.rfind(' ');
+      if (last_space != std::string::npos) {
+        last_space = child_fen.rfind(' ', last_space - 1);
+      }
+      std::string child_pos = (last_space != std::string::npos)
+                                  ? child_fen.substr(0, last_space)
+                                  : child_fen;
+
+      last_space = tt_best_move.rfind(' ');
+      if (last_space != std::string::npos) {
+        last_space = tt_best_move.rfind(' ', last_space - 1);
+      }
+      std::string tt_pos = (last_space != std::string::npos)
+                               ? tt_best_move.substr(0, last_space)
+                               : tt_best_move;
+
+      board.unmake_move(move);
+
+      if (child_pos == tt_pos) {
+        continue; // Skip the TT move
+      }
+
+      // Search alternative move
+      board.make_move(move);
+      int score =
+          alpha_beta_internal(child_fen, singular_depth, singular_beta - 1,
+                              singular_beta, !maximizingPlayer, evaluate, tt,
+                              use_quiescence, killers, ply + 1, history);
+      board.unmake_move(move);
+
+      best_alternative = std::max(best_alternative, score);
+
+      // Early exit if we find a move that's close to the TT move
+      if (best_alternative >= singular_beta) {
+        break;
+      }
+    }
+
+    // If no alternative came close, extend the search
+    if (best_alternative < singular_beta) {
+      extension = 1;
+    }
   }
 
   // Move ordering with TT, killers, MVV-LVA, history, promotions
@@ -601,61 +826,93 @@ alpha_beta_internal(const std::string &fen, int depth, int alpha, int beta,
 
   if (maximizingPlayer) {
     int maxEval = MIN;
+
+    // Futility pruning setup - only at low depths
+    bool use_futility = false;
+    int futility_margin = 0;
+    int static_eval = 0;
+
+    if (depth <= 6 && !board.is_check()) {
+      static_eval = evaluate(fen);
+      futility_margin = 100 + 50 * depth; // Depth 1: 150, Depth 6: 400
+      use_futility = true;
+    }
+
     for (const Move &move : legal_moves) {
       board.make_move(move);
       std::string child_fen = board.to_fen();
-      
+
       int eval;
       bool is_capture = board.is_capture(move);
       bool is_promotion = (move.promotion != EMPTY);
-      
+
+      // Futility pruning - skip quiet moves that can't raise alpha
+      if (use_futility && !is_capture && !is_promotion && moves_searched > 0 &&
+          !board.is_check()) {
+        if (static_eval + futility_margin < alpha) {
+          board.unmake_move(move);
+          moves_searched++;
+          continue; // Skip this move
+        }
+      }
+
       // Principal Variation Search (PVS)
       // First move gets full window, rest get null window (scout search)
       if (moves_searched == 0) {
-        // First move - search with full window
-        eval = alpha_beta_internal(child_fen, depth - 1, alpha, beta, false,
-                                   evaluate, tt, use_quiescence, killers, ply + 1, history);
+        // First move - search with full window (with possible extension)
+        eval = alpha_beta_internal(child_fen, depth - 1 + extension, alpha,
+                                   beta, false, evaluate, tt, use_quiescence,
+                                   killers, ply + 1, history);
       } else {
         // Late Move Reduction (LMR)
         bool do_lmr = false;
         int reduction = 0;
-        
-        if (depth >= 3 && moves_searched >= 4 && !is_capture && !is_promotion && !board.is_check()) {
+
+        if (depth >= 3 && moves_searched >= 4 && !is_capture && !is_promotion &&
+            !board.is_check()) {
           do_lmr = true;
           reduction = 1;
-          if (moves_searched >= 8) reduction = 2;
+          if (moves_searched >= 8)
+            reduction = 2;
         }
-        
+
         // Scout search with null window
         if (do_lmr) {
           // LMR + null window
-          eval = alpha_beta_internal(child_fen, depth - 1 - reduction, alpha, alpha + 1, false,
-                                     evaluate, tt, use_quiescence, killers, ply + 1, history);
-          // If scout search fails high, re-search with reduced depth but full window
+          eval = alpha_beta_internal(child_fen, depth - 1 - reduction, alpha,
+                                     alpha + 1, false, evaluate, tt,
+                                     use_quiescence, killers, ply + 1, history);
+          // If scout search fails high, re-search with reduced depth but full
+          // window
           if (eval > alpha && eval < beta) {
             eval = alpha_beta_internal(child_fen, depth - 1, alpha, beta, false,
-                                       evaluate, tt, use_quiescence, killers, ply + 1, history);
+                                       evaluate, tt, use_quiescence, killers,
+                                       ply + 1, history);
           } else if (eval > alpha) {
             // Double re-search: first without reduction, then with full window
-            eval = alpha_beta_internal(child_fen, depth - 1, alpha, alpha + 1, false,
-                                       evaluate, tt, use_quiescence, killers, ply + 1, history);
+            eval = alpha_beta_internal(child_fen, depth - 1, alpha, alpha + 1,
+                                       false, evaluate, tt, use_quiescence,
+                                       killers, ply + 1, history);
             if (eval > alpha && eval < beta) {
-              eval = alpha_beta_internal(child_fen, depth - 1, alpha, beta, false,
-                                         evaluate, tt, use_quiescence, killers, ply + 1, history);
+              eval = alpha_beta_internal(child_fen, depth - 1, alpha, beta,
+                                         false, evaluate, tt, use_quiescence,
+                                         killers, ply + 1, history);
             }
           }
         } else {
           // PVS null window search
-          eval = alpha_beta_internal(child_fen, depth - 1, alpha, alpha + 1, false,
-                                     evaluate, tt, use_quiescence, killers, ply + 1, history);
+          eval = alpha_beta_internal(child_fen, depth - 1, alpha, alpha + 1,
+                                     false, evaluate, tt, use_quiescence,
+                                     killers, ply + 1, history);
           // If scout search fails high, re-search with full window
           if (eval > alpha && eval < beta) {
             eval = alpha_beta_internal(child_fen, depth - 1, alpha, beta, false,
-                                       evaluate, tt, use_quiescence, killers, ply + 1, history);
+                                       evaluate, tt, use_quiescence, killers,
+                                       ply + 1, history);
           }
         }
       }
-      
+
       board.unmake_move(move);
       moves_searched++;
 
@@ -690,61 +947,91 @@ alpha_beta_internal(const std::string &fen, int depth, int alpha, int beta,
   } else {
     int minEval = MAX;
     int moves_searched = 0;
-    
+
+    // Futility pruning setup - only at low depths
+    bool use_futility = false;
+    int futility_margin = 0;
+    int static_eval = 0;
+
+    if (depth <= 6 && !board.is_check()) {
+      static_eval = evaluate(fen);
+      futility_margin = 100 + 50 * depth;
+      use_futility = true;
+    }
+
     for (const Move &move : legal_moves) {
       board.make_move(move);
       std::string child_fen = board.to_fen();
-      
+
       int eval;
       bool is_capture = board.is_capture(move);
       bool is_promotion = (move.promotion != EMPTY);
-      
+
+      // Futility pruning - skip quiet moves that can't lower beta
+      if (use_futility && !is_capture && !is_promotion && moves_searched > 0 &&
+          !board.is_check()) {
+        if (static_eval - futility_margin > beta) {
+          board.unmake_move(move);
+          moves_searched++;
+          continue; // Skip this move
+        }
+      }
+
       // Principal Variation Search (PVS)
       if (moves_searched == 0) {
-        // First move - search with full window
-        eval = alpha_beta_internal(child_fen, depth - 1, alpha, beta, true,
-                                   evaluate, tt, use_quiescence, killers, ply + 1, history);
+        // First move - search with full window (with possible extension)
+        eval = alpha_beta_internal(child_fen, depth - 1 + extension, alpha,
+                                   beta, true, evaluate, tt, use_quiescence,
+                                   killers, ply + 1, history);
       } else {
         // Late Move Reduction (LMR)
         bool do_lmr = false;
         int reduction = 0;
-        
-        if (depth >= 3 && moves_searched >= 4 && !is_capture && !is_promotion && !board.is_check()) {
+
+        if (depth >= 3 && moves_searched >= 4 && !is_capture && !is_promotion &&
+            !board.is_check()) {
           do_lmr = true;
           reduction = 1;
-          if (moves_searched >= 8) reduction = 2;
+          if (moves_searched >= 8)
+            reduction = 2;
         }
-        
+
         // Scout search with null window
         if (do_lmr) {
           // LMR + null window
-          eval = alpha_beta_internal(child_fen, depth - 1 - reduction, beta - 1, beta, true,
-                                     evaluate, tt, use_quiescence, killers, ply + 1, history);
+          eval = alpha_beta_internal(child_fen, depth - 1 - reduction, beta - 1,
+                                     beta, true, evaluate, tt, use_quiescence,
+                                     killers, ply + 1, history);
           // If scout search fails low, re-search
           if (eval < beta && eval > alpha) {
             eval = alpha_beta_internal(child_fen, depth - 1, alpha, beta, true,
-                                       evaluate, tt, use_quiescence, killers, ply + 1, history);
+                                       evaluate, tt, use_quiescence, killers,
+                                       ply + 1, history);
           } else if (eval < beta) {
             // Double re-search
-            eval = alpha_beta_internal(child_fen, depth - 1, beta - 1, beta, true,
-                                       evaluate, tt, use_quiescence, killers, ply + 1, history);
+            eval = alpha_beta_internal(child_fen, depth - 1, beta - 1, beta,
+                                       true, evaluate, tt, use_quiescence,
+                                       killers, ply + 1, history);
             if (eval < beta && eval > alpha) {
-              eval = alpha_beta_internal(child_fen, depth - 1, alpha, beta, true,
-                                         evaluate, tt, use_quiescence, killers, ply + 1, history);
+              eval = alpha_beta_internal(child_fen, depth - 1, alpha, beta,
+                                         true, evaluate, tt, use_quiescence,
+                                         killers, ply + 1, history);
             }
           }
         } else {
           // PVS null window search
           eval = alpha_beta_internal(child_fen, depth - 1, beta - 1, beta, true,
-                                     evaluate, tt, use_quiescence, killers, ply + 1, history);
+                                     evaluate, tt, use_quiescence, killers,
+                                     ply + 1, history);
           // If scout search fails low, re-search with full window
           if (eval < beta && eval > alpha) {
             eval = alpha_beta_internal(child_fen, depth - 1, alpha, beta, true,
-                                       evaluate, tt, use_quiescence, killers, ply + 1, history);
+                                       evaluate, tt, use_quiescence, killers,
+                                       ply + 1, history);
           }
         }
       }
-      
+
       board.unmake_move(move);
       moves_searched++;
 
@@ -792,28 +1079,31 @@ int iterative_deepening(const std::string &fen, int max_depth, int alpha,
   for (int depth = 1; depth <= max_depth; depth++) {
     int current_alpha = alpha;
     int current_beta = beta;
-    
+
     // Use aspiration windows for depth >= 3
     if (depth >= 3) {
       current_alpha = best_score - ASPIRATION_WINDOW;
       current_beta = best_score + ASPIRATION_WINDOW;
-      
+
       // Ensure we don't go beyond original bounds
-      if (current_alpha < alpha) current_alpha = alpha;
-      if (current_beta > beta) current_beta = beta;
+      if (current_alpha < alpha)
+        current_alpha = alpha;
+      if (current_beta > beta)
+        current_beta = beta;
     }
-    
+
     // Search with aspiration window
-    int score = alpha_beta_internal(fen, depth, current_alpha, current_beta, maximizingPlayer,
-                                    evaluate, tt, true, killers, 0, history);
-    
+    int score = alpha_beta_internal(fen, depth, current_alpha, current_beta,
+                                    maximizingPlayer, evaluate, tt, true,
+                                    killers, 0, history);
+
     // If score falls outside window, re-search with full window
     if (depth >= 3 && (score <= current_alpha || score >= current_beta)) {
       // Failed low or high - re-search with full window
       score = alpha_beta_internal(fen, depth, alpha, beta, maximizingPlayer,
                                   evaluate, tt, true, killers, 0, history);
     }
-    
+
     best_score = score;
 
     // Early exit on mate found
@@ -826,19 +1116,22 @@ int iterative_deepening(const std::string &fen, int max_depth, int alpha,
 }
 
 // 2. OPTIMIZED: Full production version with all optimizations
-int alpha_beta_optimized(const std::string &fen, int depth, int alpha, int beta,
-                         bool maximizingPlayer,
-                         const std::function<int(const std::string &)> &evaluate,
-                         TranspositionTable *tt, int num_threads,
-                         KillerMoves *killers, HistoryTable *history) {
+int alpha_beta_optimized(
+    const std::string &fen, int depth, int alpha, int beta,
+    bool maximizingPlayer,
+    const std::function<int(const std::string &)> &evaluate,
+    TranspositionTable *tt, int num_threads, KillerMoves *killers,
+    HistoryTable *history, CounterMoveTable *counters) {
   TranspositionTable local_tt;
   TranspositionTable &tt_ref = tt ? *tt : local_tt;
 
-  // Create local killer/history tables if not provided
+  // Create local killer/history/counter tables if not provided
   KillerMoves local_killers;
   HistoryTable local_history;
+  CounterMoveTable local_counters;
   KillerMoves *killers_ptr = killers ? killers : &local_killers;
   HistoryTable *history_ptr = history ? history : &local_history;
+  CounterMoveTable *counters_ptr = counters ? counters : &local_counters;
 
   // If no threading requested, use iterative deepening with single thread
   if (num_threads <= 1 || depth <= 2) {
@@ -888,10 +1181,12 @@ int alpha_beta_optimized(const std::string &fen, int depth, int alpha, int beta,
     int score;
     if (maximizingPlayer) {
       score = alpha_beta_internal(child_fen, depth - 1, alpha, beta, false,
-                                  evaluate, tt_ref, true, killers_ptr, 1, history_ptr);
+                                  evaluate, tt_ref, true, killers_ptr, 1,
+                                  history_ptr);
     } else {
-      score = alpha_beta_internal(child_fen, depth - 1, alpha, beta, true,
-                                  evaluate, tt_ref, true, killers_ptr, 1, history_ptr);
+      score =
+          alpha_beta_internal(child_fen, depth - 1, alpha, beta, true, evaluate,
+                              tt_ref, true, killers_ptr, 1, history_ptr);
     }
 
     return {move, score};
@@ -937,10 +1232,164 @@ int alpha_beta_optimized(const std::string &fen, int depth, int alpha, int beta,
 int alpha_beta_cuda(const std::string &fen, int depth, int alpha, int beta,
                     bool maximizingPlayer,
                     const std::function<int(const std::string &)> &evaluate,
-                    TranspositionTable *tt, KillerMoves *killers, 
-                    HistoryTable *history) {
+                    TranspositionTable *tt, KillerMoves *killers,
+                    HistoryTable *history, CounterMoveTable *counters) {
   // TODO: Implement CUDA-accelerated batch evaluation
   // For now, fall back to optimized CPU version
   return alpha_beta_optimized(fen, depth, alpha, beta, maximizingPlayer,
-                              evaluate, tt, 0, killers, history);
+                              evaluate, tt, 0, killers, history, counters);
+}
+
+// ============================================================================
+// BEST MOVE FINDER - Returns the actual best move, not just score
+// ============================================================================
+std::string
+find_best_move(const std::string &fen, int depth,
+               const std::function<int(const std::string &)> &evaluate,
+               TranspositionTable *tt, int num_threads, KillerMoves *killers,
+               HistoryTable *history, CounterMoveTable *counters) {
+  // Create local instances if not provided
+  TranspositionTable local_tt;
+  KillerMoves local_killers;
+  HistoryTable local_history;
+  CounterMoveTable local_counters;
+
+  if (!tt)
+    tt = &local_tt;
+  if (!killers)
+    killers = &local_killers;
+  if (!history)
+    history = &local_history;
+  if (!counters)
+    counters = &local_counters;
+
+  // Parse FEN to determine whos to move
+  ChessBoard board(fen);
+  std::vector<Move> legal_moves = board.generate_legal_moves();
+
+  if (legal_moves.empty()) {
+    return ""; // No legal moves
+  }
+
+  // Determine if maximizing (white to move)
+  bool maximizing = fen.find(" w ") != std::string::npos;
+
+  // Run the search - this populates TT with best move
+  alpha_beta_optimized(fen, depth, MIN, MAX, maximizing, evaluate, tt,
+                       num_threads, killers, history, counters);
+
+  // Get the best move FEN from TT
+  std::string best_move_fen = tt->get_best_move(fen);
+
+  if (best_move_fen.empty()) {
+    // Fallback: evaluate each move and pick the best
+    std::string best = "";
+    int best_score = maximizing ? MIN : MAX;
+
+    for (const Move &move : legal_moves) {
+      board.make_move(move);
+      std::string child_fen = board.to_fen();
+
+      int score =
+          alpha_beta_optimized(child_fen, depth - 1, MIN, MAX, !maximizing,
+                               evaluate, tt, 0, killers, history);
+
+      board.unmake_move(move);
+
+      if ((maximizing && score > best_score) ||
+          (!maximizing && score < best_score)) {
+        best_score = score;
+        best = child_fen;
+      }
+    }
+    return best;
+  }
+
+  return best_move_fen;
+}
+
+// Convert best move FEN back to move notation (UCI format: e.g., "e2e4")
+std::string
+get_best_move_uci(const std::string &fen, int depth,
+                  const std::function<int(const std::string &)> &evaluate,
+                  TranspositionTable *tt, int num_threads, KillerMoves *killers,
+                  HistoryTable *history, CounterMoveTable *counters) {
+  std::string best_move_fen = find_best_move(
+      fen, depth, evaluate, tt, num_threads, killers, history, counters);
+
+  if (best_move_fen.empty()) {
+    return "";
+  }
+
+  // Find which move leads to this FEN
+  ChessBoard board(fen);
+  std::vector<Move> legal_moves = board.generate_legal_moves();
+
+  // Extract position part of FEN (everything before halfmove clock)
+  // FEN format: "position w/b castling ep halfmove fullmove"
+  // We only want: "position w/b castling ep"
+  auto last_space = best_move_fen.rfind(' ');
+  if (last_space != std::string::npos) {
+    last_space = best_move_fen.rfind(' ', last_space - 1);
+  }
+  std::string best_move_pos = (last_space != std::string::npos)
+                                  ? best_move_fen.substr(0, last_space)
+                                  : best_move_fen;
+
+  for (const Move &move : legal_moves) {
+    board.make_move(move);
+    std::string child_fen = board.to_fen();
+    board.unmake_move(move);
+
+    // Extract position part from child FEN too
+    last_space = child_fen.rfind(' ');
+    if (last_space != std::string::npos) {
+      last_space = child_fen.rfind(' ', last_space - 1);
+    }
+    std::string child_pos = (last_space != std::string::npos)
+                                ? child_fen.substr(0, last_space)
+                                : child_fen;
+
+    if (child_pos == best_move_pos) {
+      // Convert move to UCI format (e.g., "e2e4", "e7e8q" for promotion)
+      std::string uci = "";
+
+      // Convert square indices to algebraic notation
+      int from_rank = move.from / 8;
+      int from_file = move.from % 8;
+      int to_rank = move.to / 8;
+      int to_file = move.to % 8;
+
+      uci += char('a' + from_file);
+      uci += char('1' + from_rank);
+      uci += char('a' + to_file);
+      uci += char('1' + to_rank);
+
+      // Add promotion piece if applicable
+      if (move.promotion != EMPTY) {
+        char promo = ' ';
+        int piece_type = move.promotion < 0 ? -move.promotion : move.promotion;
+        switch (piece_type) {
+        case 2:
+          promo = 'n';
+          break; // Knight
+        case 3:
+          promo = 'b';
+          break; // Bishop
+        case 4:
+          promo = 'r';
+          break; // Rook
+        case 5:
+          promo = 'q';
+          break; // Queen
+        }
+        if (promo != ' ')
+          uci += promo;
+      }
+
+      return uci;
+    }
+  }
+
+  return ""; // Should not reach here
 }

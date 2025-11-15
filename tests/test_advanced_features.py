@@ -7,7 +7,7 @@ import time
 
 # Get parent directory and add build path
 parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-build_path = os.path.join(parent_dir, 'build')
+build_path = os.path.join(parent_dir, "build")
 sys.path.insert(0, build_path)
 
 import c_helpers
@@ -17,17 +17,29 @@ print("Advanced Search Features Test")
 print("=" * 70)
 print()
 
+
 def nnue_evaluate(fen: str) -> int:
     """Simple material count evaluation"""
     piece_values = {
-        'P': 100, 'N': 320, 'B': 330, 'R': 500, 'Q': 900, 'K': 0,
-        'p': -100, 'n': -320, 'b': -330, 'r': -500, 'q': -900, 'k': 0
+        "P": 100,
+        "N": 320,
+        "B": 330,
+        "R": 500,
+        "Q": 900,
+        "K": 0,
+        "p": -100,
+        "n": -320,
+        "b": -330,
+        "r": -500,
+        "q": -900,
+        "k": 0,
     }
     score = 0
     for char in fen.split()[0]:
         if char in piece_values:
             score += piece_values[char]
     return score
+
 
 # Test positions
 starting_pos = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
@@ -48,8 +60,16 @@ history = c_helpers.HistoryTable()
 print("Searching to depth 5...")
 start = time.time()
 score = c_helpers.alpha_beta_optimized(
-    middlegame, 5, c_helpers.MIN, c_helpers.MAX,
-    True, nnue_evaluate, tt, 1, killers, history
+    middlegame,
+    5,
+    c_helpers.MIN,
+    c_helpers.MAX,
+    True,
+    nnue_evaluate,
+    tt,
+    1,
+    killers,
+    history,
 )
 elapsed = time.time() - start
 
@@ -72,8 +92,16 @@ history2 = c_helpers.HistoryTable()
 print("Searching starting position to depth 4...")
 start = time.time()
 score2 = c_helpers.alpha_beta_optimized(
-    starting_pos, 4, c_helpers.MIN, c_helpers.MAX,
-    True, nnue_evaluate, tt2, 1, killers2, history2
+    starting_pos,
+    4,
+    c_helpers.MIN,
+    c_helpers.MAX,
+    True,
+    nnue_evaluate,
+    tt2,
+    1,
+    killers2,
+    history2,
 )
 elapsed2 = time.time() - start
 
@@ -96,8 +124,16 @@ history3 = c_helpers.HistoryTable()
 print("Searching tactical position to depth 5...")
 start = time.time()
 score3 = c_helpers.alpha_beta_optimized(
-    tactical, 5, c_helpers.MIN, c_helpers.MAX,
-    True, nnue_evaluate, tt3, 1, killers3, history3
+    tactical,
+    5,
+    c_helpers.MIN,
+    c_helpers.MAX,
+    True,
+    nnue_evaluate,
+    tt3,
+    1,
+    killers3,
+    history3,
 )
 elapsed3 = time.time() - start
 
@@ -118,8 +154,16 @@ history4 = c_helpers.HistoryTable()
 print("Searching middlegame position to depth 5 (parallel)...")
 start = time.time()
 score4 = c_helpers.alpha_beta_optimized(
-    middlegame, 5, c_helpers.MIN, c_helpers.MAX,
-    True, nnue_evaluate, tt4, 0, killers4, history4  # 0 = auto threads
+    middlegame,
+    5,
+    c_helpers.MIN,
+    c_helpers.MAX,
+    True,
+    nnue_evaluate,
+    tt4,
+    0,
+    killers4,
+    history4,  # 0 = auto threads
 )
 elapsed4 = time.time() - start
 
@@ -142,8 +186,16 @@ history5 = c_helpers.HistoryTable()
 print("Searching starting position to depth 6...")
 start = time.time()
 score5 = c_helpers.alpha_beta_optimized(
-    starting_pos, 6, c_helpers.MIN, c_helpers.MAX,
-    True, nnue_evaluate, tt5, 0, killers5, history5
+    starting_pos,
+    6,
+    c_helpers.MIN,
+    c_helpers.MAX,
+    True,
+    nnue_evaluate,
+    tt5,
+    0,
+    killers5,
+    history5,
 )
 elapsed5 = time.time() - start
 

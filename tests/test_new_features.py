@@ -6,7 +6,7 @@ import os
 import time
 
 # Add build directory to path
-build_path = os.path.join(os.path.dirname(__file__), 'build')
+build_path = os.path.join(os.path.dirname(__file__), "build")
 sys.path.insert(0, build_path)
 
 import c_helpers
@@ -16,17 +16,29 @@ print("Chess Engine - New Features Test")
 print("=" * 70)
 print()
 
+
 def nnue_evaluate(fen: str) -> int:
     """Simple material count evaluation"""
     piece_values = {
-        'P': 100, 'N': 320, 'B': 330, 'R': 500, 'Q': 900, 'K': 0,
-        'p': -100, 'n': -320, 'b': -330, 'r': -500, 'q': -900, 'k': 0
+        "P": 100,
+        "N": 320,
+        "B": 330,
+        "R": 500,
+        "Q": 900,
+        "K": 0,
+        "p": -100,
+        "n": -320,
+        "b": -330,
+        "r": -500,
+        "q": -900,
+        "k": 0,
     }
     score = 0
     for char in fen.split()[0]:
         if char in piece_values:
             score += piece_values[char]
     return score
+
 
 # Test positions
 starting_pos = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
@@ -42,8 +54,14 @@ print(f"Depth: 3")
 
 start = time.time()
 score_baseline = c_helpers.alpha_beta_optimized(
-    fen, 3, c_helpers.MIN, c_helpers.MAX,
-    True, nnue_evaluate, tt, 1  # Single-threaded, no killers/history
+    fen,
+    3,
+    c_helpers.MIN,
+    c_helpers.MAX,
+    True,
+    nnue_evaluate,
+    tt,
+    1,  # Single-threaded, no killers/history
 )
 time_baseline = time.time() - start
 
@@ -60,8 +78,7 @@ history = c_helpers.HistoryTable()
 
 start = time.time()
 score_enhanced = c_helpers.alpha_beta_optimized(
-    fen, 3, c_helpers.MIN, c_helpers.MAX,
-    True, nnue_evaluate, tt2, 1, killers, history
+    fen, 3, c_helpers.MIN, c_helpers.MAX, True, nnue_evaluate, tt2, 1, killers, history
 )
 time_enhanced = time.time() - start
 
@@ -82,8 +99,16 @@ print(f"Depth: 4")
 
 start = time.time()
 score_tactical = c_helpers.alpha_beta_optimized(
-    fen, 4, c_helpers.MIN, c_helpers.MAX,
-    True, nnue_evaluate, tt3, 1, killers3, history3
+    fen,
+    4,
+    c_helpers.MIN,
+    c_helpers.MAX,
+    True,
+    nnue_evaluate,
+    tt3,
+    1,
+    killers3,
+    history3,
 )
 time_tactical = time.time() - start
 
@@ -104,8 +129,16 @@ print(f"Threads: auto")
 
 start = time.time()
 score_parallel = c_helpers.alpha_beta_optimized(
-    fen, 4, c_helpers.MIN, c_helpers.MAX,
-    True, nnue_evaluate, tt4, 0, killers4, history4  # 0 = auto-detect threads
+    fen,
+    4,
+    c_helpers.MIN,
+    c_helpers.MAX,
+    True,
+    nnue_evaluate,
+    tt4,
+    0,
+    killers4,
+    history4,  # 0 = auto-detect threads
 )
 time_parallel = time.time() - start
 
@@ -124,8 +157,16 @@ history5 = c_helpers.HistoryTable()
 print("Search 1: Starting position, depth 3")
 start = time.time()
 score1 = c_helpers.alpha_beta_optimized(
-    starting_pos, 3, c_helpers.MIN, c_helpers.MAX,
-    True, nnue_evaluate, tt5, 1, killers5, history5
+    starting_pos,
+    3,
+    c_helpers.MIN,
+    c_helpers.MAX,
+    True,
+    nnue_evaluate,
+    tt5,
+    1,
+    killers5,
+    history5,
 )
 time1 = time.time() - start
 print(f"  Score: {score1}, Time: {time1:.4f}s, TT: {len(tt5)}")
@@ -134,8 +175,16 @@ print(f"  Score: {score1}, Time: {time1:.4f}s, TT: {len(tt5)}")
 print("Search 2: After 1.e4, depth 3 (reusing tables)")
 start = time.time()
 score2 = c_helpers.alpha_beta_optimized(
-    after_e4, 3, c_helpers.MIN, c_helpers.MAX,
-    False, nnue_evaluate, tt5, 1, killers5, history5
+    after_e4,
+    3,
+    c_helpers.MIN,
+    c_helpers.MAX,
+    False,
+    nnue_evaluate,
+    tt5,
+    1,
+    killers5,
+    history5,
 )
 time2 = time.time() - start
 print(f"  Score: {score2}, Time: {time2:.4f}s, TT: {len(tt5)}")
@@ -150,8 +199,16 @@ tt6 = c_helpers.TranspositionTable()
 # Build up history
 for _ in range(3):
     c_helpers.alpha_beta_optimized(
-        starting_pos, 2, c_helpers.MIN, c_helpers.MAX,
-        True, nnue_evaluate, tt6, 1, None, history6
+        starting_pos,
+        2,
+        c_helpers.MIN,
+        c_helpers.MAX,
+        True,
+        nnue_evaluate,
+        tt6,
+        1,
+        None,
+        history6,
     )
 
 print("After 3 searches: history table filled")
@@ -175,6 +232,8 @@ print("  [OK] Parallel search compatibility")
 print()
 print("Performance improvements observed:")
 if time_baseline > time_enhanced:
-    print(f"  - {((time_baseline/time_enhanced - 1) * 100):.1f}% faster with killer moves + history")
+    print(
+        f"  - {((time_baseline/time_enhanced - 1) * 100):.1f}% faster with killer moves + history"
+    )
 print(f"  - All features integrate seamlessly")
 print("=" * 70)

@@ -6,7 +6,7 @@ import sys
 import os
 
 # Add build directory to path so c_helpers can be imported
-build_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'build')
+build_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "build")
 if build_path not in sys.path:
     sys.path.insert(0, build_path)
 
@@ -15,9 +15,11 @@ import c_helpers
 # Import CUDA checker utility
 try:
     from .cuda_check import is_cuda_available, get_cuda_info
+
     CUDA_CHECKER_AVAILABLE = True
 except ImportError:
     CUDA_CHECKER_AVAILABLE = False
+
 
 # Detect CUDA availability
 def has_cuda():
@@ -28,20 +30,22 @@ def has_cuda():
             return True
     except AttributeError:
         pass
-    
+
     # Then check via PyTorch if available
     if CUDA_CHECKER_AVAILABLE:
         cuda_available, _ = is_cuda_available()
         if cuda_available:
             return True
-    
+
     # Finally check nvidia-smi as fallback
     try:
         import subprocess
-        result = subprocess.run(['nvidia-smi'], capture_output=True, timeout=1)
+
+        result = subprocess.run(["nvidia-smi"], capture_output=True, timeout=1)
         return result.returncode == 0
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return False
+
 
 def get_cuda_status():
     """Get detailed CUDA status information"""
@@ -51,7 +55,7 @@ def get_cuda_status():
         return cpp_info
     except AttributeError:
         pass
-    
+
     # Try Python method
     if CUDA_CHECKER_AVAILABLE:
         cuda_available, msg = is_cuda_available()
@@ -60,8 +64,9 @@ def get_cuda_status():
             if info:
                 return f"{info['device_count']} GPU(s): {info['devices'][0]['name']}"
         return msg
-    
+
     return "CUDA detection not available"
+
 
 # Global configuration
 USE_CUDA = has_cuda()
@@ -101,8 +106,7 @@ def test_func(ctx: GameContext):
     total_weight = sum(move_weights)
     # Normalize so probabilities sum to 1
     move_probs = {
-        move: weight / total_weight
-        for move, weight in zip(legal_moves, move_weights)
+        move: weight / total_weight for move, weight in zip(legal_moves, move_weights)
     }
     ctx.logProbabilities(move_probs)
 
@@ -127,8 +131,18 @@ def nnue_evaluate(fen: str) -> int:
     Currently returns simple material count
     """
     piece_values = {
-        'P': 100, 'N': 320, 'B': 330, 'R': 500, 'Q': 900, 'K': 0,
-        'p': -100, 'n': -320, 'b': -330, 'r': -500, 'q': -900, 'k': 0
+        "P": 100,
+        "N": 320,
+        "B": 330,
+        "R": 500,
+        "Q": 900,
+        "K": 0,
+        "p": -100,
+        "n": -320,
+        "b": -330,
+        "r": -500,
+        "q": -900,
+        "k": 0,
     }
     score = 0
     for char in fen.split()[0]:
@@ -137,11 +151,17 @@ def nnue_evaluate(fen: str) -> int:
     return score
 
 
-def alpha_beta_basic(fen: str, depth: int, alpha: int = None, beta: int = None, 
-                     maximizing_player: bool = None, evaluate=None):
+def alpha_beta_basic(
+    fen: str,
+    depth: int,
+    alpha: int = None,
+    beta: int = None,
+    maximizing_player: bool = None,
+    evaluate=None,
+):
     """
     Call C++ alpha_beta_basic function - bare bones alpha-beta with no optimizations
-    
+
     Args:
         fen: FEN string of the position
         depth: Search depth
@@ -149,7 +169,7 @@ def alpha_beta_basic(fen: str, depth: int, alpha: int = None, beta: int = None,
         beta: Beta value (defaults to MAX)
         maximizing_player: True if maximizing player (defaults to True if FEN indicates white)
         evaluate: Evaluation function (defaults to nnue_evaluate)
-    
+
     Returns:
         Evaluation score
     """
@@ -160,19 +180,30 @@ def alpha_beta_basic(fen: str, depth: int, alpha: int = None, beta: int = None,
     if maximizing_player is None:
         # Determine from FEN (second part should be 'w' or 'b')
         parts = fen.split()
-        maximizing_player = len(parts) > 1 and parts[1] == 'w'
+        maximizing_player = len(parts) > 1 and parts[1] == "w"
     if evaluate is None:
         evaluate = nnue_evaluate
-    
-    return c_helpers.alpha_beta_basic(fen, depth, alpha, beta, maximizing_player, evaluate)
+
+    return c_helpers.alpha_beta_basic(
+        fen, depth, alpha, beta, maximizing_player, evaluate
+    )
 
 
-def alpha_beta_optimized(fen: str, depth: int, alpha: int = None, beta: int = None,
-                         maximizing_player: bool = None, evaluate=None,
-                         tt=None, num_threads: int = 0, killers=None, history=None):
+def alpha_beta_optimized(
+    fen: str,
+    depth: int,
+    alpha: int = None,
+    beta: int = None,
+    maximizing_player: bool = None,
+    evaluate=None,
+    tt=None,
+    num_threads: int = 0,
+    killers=None,
+    history=None,
+):
     """
     Call C++ alpha_beta_optimized function - full optimizations (TT, move ordering, etc.)
-    
+
     Args:
         fen: FEN string of the position
         depth: Search depth
@@ -184,7 +215,7 @@ def alpha_beta_optimized(fen: str, depth: int, alpha: int = None, beta: int = No
         num_threads: Number of threads (0 = auto, 1 = sequential)
         killers: KillerMoves instance (optional)
         history: HistoryTable instance (optional)
-    
+
     Returns:
         Evaluation score
     """
@@ -195,22 +226,38 @@ def alpha_beta_optimized(fen: str, depth: int, alpha: int = None, beta: int = No
     if maximizing_player is None:
         # Determine from FEN
         parts = fen.split()
-        maximizing_player = len(parts) > 1 and parts[1] == 'w'
+        maximizing_player = len(parts) > 1 and parts[1] == "w"
     if evaluate is None:
         evaluate = nnue_evaluate
-    
+
     return c_helpers.alpha_beta_optimized(
-        fen, depth, alpha, beta, maximizing_player, evaluate,
-        tt, num_threads, killers, history
+        fen,
+        depth,
+        alpha,
+        beta,
+        maximizing_player,
+        evaluate,
+        tt,
+        num_threads,
+        killers,
+        history,
     )
 
 
-def alpha_beta_cuda(fen: str, depth: int, alpha: int = None, beta: int = None,
-                    maximizing_player: bool = None, evaluate=None,
-                    tt=None, killers=None, history=None):
+def alpha_beta_cuda(
+    fen: str,
+    depth: int,
+    alpha: int = None,
+    beta: int = None,
+    maximizing_player: bool = None,
+    evaluate=None,
+    tt=None,
+    killers=None,
+    history=None,
+):
     """
     Call C++ alpha_beta_cuda function - CUDA-accelerated search (falls back to optimized)
-    
+
     Args:
         fen: FEN string of the position
         depth: Search depth
@@ -221,7 +268,7 @@ def alpha_beta_cuda(fen: str, depth: int, alpha: int = None, beta: int = None,
         tt: TranspositionTable instance (optional)
         killers: KillerMoves instance (optional)
         history: HistoryTable instance (optional)
-    
+
     Returns:
         Evaluation score
     """
@@ -232,61 +279,71 @@ def alpha_beta_cuda(fen: str, depth: int, alpha: int = None, beta: int = None,
     if maximizing_player is None:
         # Determine from FEN
         parts = fen.split()
-        maximizing_player = len(parts) > 1 and parts[1] == 'w'
+        maximizing_player = len(parts) > 1 and parts[1] == "w"
     if evaluate is None:
         evaluate = nnue_evaluate
-    
+
     return c_helpers.alpha_beta_cuda(
-        fen, depth, alpha, beta, maximizing_player, evaluate,
-        tt, killers, history
+        fen, depth, alpha, beta, maximizing_player, evaluate, tt, killers, history
     )
 
 
-def search_position(fen: str, depth: int = SEARCH_DEPTH, tt=None, killers=None, history=None) -> int:
+def search_position(
+    fen: str, depth: int = SEARCH_DEPTH, tt=None, killers=None, history=None
+) -> int:
     """
     Search a position using the best available engine
     Returns the evaluation score
-    
+
     Args:
         fen: FEN string of the position
         depth: Search depth
         tt: TranspositionTable instance (uses global if None)
         killers: KillerMoves instance (uses global if None)
         history: HistoryTable instance (uses global if None)
-    
+
     Returns:
         Evaluation score
     """
     global transposition_table, killer_moves, history_table
-    
+
     if tt is None:
         tt = transposition_table
     if killers is None:
         killers = killer_moves
     if history is None:
         history = history_table
-    
+
     if USE_CUDA:
         # Use CUDA-accelerated search if available
-        return alpha_beta_cuda(fen, depth, evaluate=nnue_evaluate, tt=tt, killers=killers, history=history)
+        return alpha_beta_cuda(
+            fen, depth, evaluate=nnue_evaluate, tt=tt, killers=killers, history=history
+        )
     else:
         # Use optimized CPU search with all features
-        return alpha_beta_optimized(fen, depth, evaluate=nnue_evaluate, tt=tt, 
-                                   num_threads=NUM_THREADS, killers=killers, history=history)
+        return alpha_beta_optimized(
+            fen,
+            depth,
+            evaluate=nnue_evaluate,
+            tt=tt,
+            num_threads=NUM_THREADS,
+            killers=killers,
+            history=history,
+        )
 
 
 def main():
     """Test the search engine"""
     starting_fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
-    
+
     print(f"\nTesting search engine...")
     print(f"Position: {starting_fen}")
     print(f"Using: {'CUDA' if USE_CUDA else 'CPU optimized'}")
-    
+
     start_time = time.time()
     result = search_position(starting_fen, depth=4)
     elapsed = time.time() - start_time
-    
+
     print(f"Search result: {result}")
     print(f"Time: {elapsed:.3f}s")
     print(f"TT entries: {len(transposition_table)}")
