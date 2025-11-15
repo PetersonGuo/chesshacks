@@ -242,6 +242,19 @@ def alpha_beta_cuda(fen: str, depth: int, alpha: int = None, beta: int = None,
     )
 
 
+def pgn_to_fen(pgn: str) -> str:
+    """
+    Convert PGN string to FEN string using C++ function.
+    
+    Args:
+        pgn: PGN (Portable Game Notation) string containing game moves
+    
+    Returns:
+        FEN string representing the final position after all moves
+    """
+    return c_helpers.pgn_to_fen(pgn)
+
+
 def search_position(fen: str, depth: int = SEARCH_DEPTH, tt=None, killers=None, history=None) -> int:
     """
     Search a position using the best available engine

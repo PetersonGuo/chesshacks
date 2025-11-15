@@ -91,5 +91,12 @@ NB_MODULE(c_helpers, m) {
   m.def("get_cuda_info", &get_cuda_info,
         "Get information about available CUDA devices.\n"
         "Returns a string describing the GPU and CUDA version.");
+
+  // 4. PGN to FEN: Convert PGN string to FEN string
+  m.def("pgn_to_fen", &pgn_to_fen,
+        nb::arg("pgn"),
+        "Convert PGN (Portable Game Notation) string to FEN (Forsyth-Edwards Notation) string.\n"
+        "Parses PGN moves and returns the final position as FEN.\n"
+        "pgn: PGN string containing game moves");
 }
 

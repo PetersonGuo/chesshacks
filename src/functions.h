@@ -92,4 +92,7 @@ int evaluate_with_pst(const std::string &fen);
 bool is_cuda_available();
 std::string get_cuda_info();
 
+// 4. PGN to FEN: Convert PGN string to FEN string
+std::string pgn_to_fen(const std::string &pgn);
+
 #endif // FUNCTIONS_H
