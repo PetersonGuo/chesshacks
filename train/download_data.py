@@ -595,18 +595,23 @@ def extract_positions_from_pgn(pgn_path: str, max_games: Optional[int] = None,
     print(f"Configuration:")
     print(f"  Positions per game: {positions_per_game}")
     print(f"  Ply range: {min_ply} - {max_ply}")
-    if subset_ratio is not None:
-        print(f"  Subset ratio: {subset_ratio:.1%} (processing {subset_ratio*100:.1f}% of games)")
-        if max_games:
+    
+    # Calculate expected games to process
+    if max_games:
+        if subset_ratio is not None:
             expected_processed = int(max_games * subset_ratio)
-            print(f"  Expected games to process: ~{expected_processed} (from {max_games} total games)")
+            print(f"  Subset ratio: {subset_ratio:.1%} (processing {subset_ratio*100:.1f}% of games)")
+            print(f"  Expected games to process: {expected_processed} (from {max_games} total games)")
         else:
-            print(f"  Expected games to process: ~{subset_ratio:.1%} of all games in file")
+            expected_processed = max_games
+            print(f"  Subset ratio: None (processing all games)")
+            print(f"  Expected games to process: {expected_processed}")
     else:
-        print(f"  Subset ratio: None (processing all games)")
-        if max_games:
-            print(f"  Expected games to process: {max_games}")
+        if subset_ratio is not None:
+            print(f"  Subset ratio: {subset_ratio:.1%} (processing {subset_ratio*100:.1f}% of games)")
+            print(f"  Expected games to process: {subset_ratio:.1%} of all games in file (unknown total)")
         else:
+            print(f"  Subset ratio: None (processing all games)")
             print(f"  Expected games to process: All games in file")
     print()
     
