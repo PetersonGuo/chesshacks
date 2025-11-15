@@ -2,6 +2,7 @@ from .utils import chess_manager, GameContext
 from chess import Move
 import random
 import time
+import c_helpers
 
 # Write code here that runs once
 # Can do things like load models from huggingface, make connections to subprocesses, etcwenis
@@ -14,7 +15,6 @@ def test_func(ctx: GameContext):
 
     print("Cooking move...")
     print(ctx.board.move_stack)
-    time.sleep(0.1)
 
     legal_moves = list(ctx.board.generate_legal_moves())
     if not legal_moves:
@@ -38,3 +38,7 @@ def reset_func(ctx: GameContext):
     # This gets called when a new game begins
     # Should do things like clear caches, reset model state, etc.
     pass
+
+
+def main():
+    c_helpers.alpha_beta(0, 3, c_helpers.MIN, c_helpers.MAX, True)
