@@ -64,9 +64,9 @@ class TrainingConfig:
     # Data download
     auto_download: bool = True
     stockfish_path: str = 'stockfish'
-    download_year: int = 2025
-    download_month: int = 10
-    download_max_games: Optional[int] = 100000  # Maximum matching games to save (None = unlimited)
+    download_year: Optional[int] = None  # Use latest month (None = auto-detect latest)
+    download_month: Optional[int] = None  # Use latest month (None = auto-detect latest)
+    download_max_games: Optional[int] = 10000  # Maximum games to download (simplified workflow)
     download_max_games_searched: Optional[int] = None  # Maximum total games to search (None = unlimited)
     download_depth: int = 10
     download_positions_per_game: int = 10
@@ -75,22 +75,9 @@ class TrainingConfig:
     download_output_format: str = 'jsonl'
     download_rated_only: bool = True  # Download rated games only
     download_output_dir: str = 'data'  # Output directory for downloaded data
-    download_min_ply: int = 10  # Minimum ply (half-move) to sample positions from
-    download_max_ply: int = 100  # Maximum ply to sample positions from
     download_mode: str = 'streaming'  # Download mode: 'streaming' or 'direct'
-    
-    # Download filtering options (None = no filter)
-    download_min_elo: Optional[int] = None  # Minimum ELO rating (either player must meet)
-    download_max_elo: Optional[int] = None  # Maximum ELO rating (both players must be below)
-    download_start_date: Optional[str] = None  # Start date filter (YYYY-MM-DD format)
-    download_end_date: Optional[str] = None  # End date filter (YYYY-MM-DD format)
-    download_time_control: Optional[str] = None  # Time control filter (e.g., "180+2", "600+0")
-    download_min_moves: Optional[int] = None  # Minimum number of moves in game
-    download_max_moves: Optional[int] = None  # Maximum number of moves in game
-    download_result_filter: Optional[str] = None  # Result filter: '1-0', '0-1', '1/2-1/2', or None
-    download_skip_filter: bool = False  # Skip filtering entirely - use all games from downloaded database
+    download_skip_filter: bool = True  # Skip filtering entirely - use all games from downloaded database (simplified workflow)
     download_skip_redownload: bool = True  # Skip re-downloading if file already exists
-    download_subset_ratio: Optional[float] = None  # Read only a subset of downloaded games (e.g., 0.1 for 10%)
     
     resume_from: Optional[str] = None
 
