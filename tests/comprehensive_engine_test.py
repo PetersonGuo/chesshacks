@@ -3,7 +3,8 @@
 
 import sys
 import time
-sys.path.insert(0, 'build')
+
+sys.path.insert(0, "build")
 import c_helpers
 
 print("=" * 80)
@@ -40,16 +41,24 @@ search_times = {}
 for search_depth in test_depths:
     transposition_table.clear()
     start_time = time.time()
-    
+
     best_move = c_helpers.get_best_move_uci(
-        starting_position_fen, search_depth, c_helpers.evaluate_with_pst,
-        transposition_table, 0, killer_moves, history_table, counter_move_table
+        starting_position_fen,
+        search_depth,
+        c_helpers.evaluate_with_pst,
+        transposition_table,
+        0,
+        killer_moves,
+        history_table,
+        counter_move_table,
     )
-    
+
     elapsed_time = time.time() - start_time
     search_times[search_depth] = elapsed_time
-    
-    print(f"   Depth {search_depth}: {best_move:6s} | {elapsed_time:.3f}s | {len(transposition_table):6d} TT entries")
+
+    print(
+        f"   Depth {search_depth}: {best_move:6s} | {elapsed_time:.3f}s | {len(transposition_table):6d} TT entries"
+    )
 
 # Calculate speedup
 if 3 in search_times and 5 in search_times:
@@ -61,22 +70,30 @@ if 3 in search_times and 5 in search_times:
 # Test tactical awareness
 print("\n4. Testing Tactical Positions...")
 tactical_test_positions = [
-    ("Scholar's Mate Threat", "rnbqkbnr/pppp1ppp/8/4p3/2B1P3/8/PPPP1PPP/RNBQK1NR w KQkq - 0 1"),
-    ("Fork Opportunity", "r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4"),
+    (
+        "Scholar's Mate Threat",
+        "rnbqkbnr/pppp1ppp/8/4p3/2B1P3/8/PPPP1PPP/RNBQK1NR w KQkq - 0 1",
+    ),
+    (
+        "Fork Opportunity",
+        "r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4",
+    ),
     ("Endgame", "8/8/8/4k3/8/8/4K3/4R3 w - - 0 1"),
 ]
 
 for position_name, position_fen in tactical_test_positions:
     transposition_table.clear()
     try:
-        best_move_uci = c_helpers.get_best_move_uci(position_fen, 4, c_helpers.evaluate_with_pst, transposition_table)
+        best_move_uci = c_helpers.get_best_move_uci(
+            position_fen, 4, c_helpers.evaluate_with_pst, transposition_table
+        )
         print(f"   {position_name:25s}: {best_move_uci}")
     except Exception as e:
         print(f"   {position_name:25s}: Error - {e}")
 
 # Feature checklist
 print("\n" + "=" * 80)
-print("FEATURE CHECKLIST (24 Features)")
+print("FEATURE CHECKLIST (23 Features)")
 print("=" * 80)
 
 features = [
@@ -103,7 +120,6 @@ features = [
     "21. Static exchange evaluation (SEE)",
     "22. Opening book integration (Polyglot)",
     "23. Multi-PV search",
-    "24. Endgame tablebase API (Syzygy placeholder)",
 ]
 
 for feature in features:
@@ -130,18 +146,11 @@ try:
 except Exception as e:
     print(f"   Opening Book error: {e}")
 
-# Test Tablebase
-try:
-    tb = c_helpers.Tablebase()
-    print(f"   Tablebase API: ✓ (initialized: {tb.is_initialized()})")
-except Exception as e:
-    print(f"   Tablebase error: {e}")
-
 print("\n" + "=" * 80)
 print("Performance Summary:")
 print(f"  - Baseline speedup: 78-339x")
 print(f"  - Sequential depth 5: ~{search_times.get(5, 0):.3f}s")
 print(f"  - With 4 threads: ~{search_times.get(5, 0)/3:.3f}s (estimated)")
 print(f"  - TT hit rate: 80-90% at depth 5+")
-print("\nAll 24 features operational! Engine ready for competition.")
+print("\nAll 23 features operational! Engine ready for competition.")
 print("=" * 80)

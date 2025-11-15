@@ -164,18 +164,19 @@ struct BookMove {
 class OpeningBook {
 public:
   OpeningBook() : loaded(false) {}
-  
+
   bool load(const std::string &book_path);
   bool is_loaded() const { return loaded; }
   std::vector<BookMove> probe(const std::string &fen);
   std::string probe_best(const std::string &fen);
-  std::string probe_weighted(const std::string &fen); // Random weighted selection
+  std::string
+  probe_weighted(const std::string &fen); // Random weighted selection
   void clear();
-  
+
 private:
   std::vector<BookEntry> entries;
   bool loaded;
-  
+
   uint64_t polyglot_hash(const std::string &fen);
   std::string decode_move(uint16_t move);
 };
@@ -185,56 +186,18 @@ private:
 // ============================================================================
 
 struct PVLine {
-  std::string uci_move;  // Best move in UCI format
-  int score;             // Evaluation score
-  int depth;             // Search depth
-  std::string pv;        // Principal variation (sequence of moves)
+  std::string uci_move; // Best move in UCI format
+  int score;            // Evaluation score
+  int depth;            // Search depth
+  std::string pv;       // Principal variation (sequence of moves)
 };
 
 // Search for multiple principal variations
-std::vector<PVLine> 
+std::vector<PVLine>
 multi_pv_search(const std::string &fen, int depth, int num_lines,
                 const std::function<int(const std::string &)> &evaluate,
                 TranspositionTable *tt = nullptr, int num_threads = 0,
                 KillerMoves *killers = nullptr, HistoryTable *history = nullptr,
                 CounterMoveTable *counters = nullptr);
-
-// ============================================================================
-// ENDGAME TABLEBASE (Placeholder for Syzygy integration)
-// ============================================================================
-
-enum WDLScore {
-  TB_LOSS = 0,
-  TB_BLESSED_LOSS = 1,
-  TB_DRAW = 2,
-  TB_CURSED_WIN = 3,
-  TB_WIN = 4,
-  TB_FAILED = 5  // Probe failed or position not in TB
-};
-
-struct TablebaseResult {
-  WDLScore wdl;
-  int dtz;  // Distance to zeroing move (50-move rule)
-  bool success;
-};
-
-class Tablebase {
-public:
-  Tablebase() : initialized(false) {}
-  
-  bool init(const std::string &path);
-  bool is_initialized() const { return initialized; }
-  TablebaseResult probe_wdl(const std::string &fen);
-  TablebaseResult probe_dtz(const std::string &fen);
-  int max_pieces() const { return max_pieces_; }
-  
-private:
-  bool initialized;
-  int max_pieces_;
-  std::string tb_path;
-  
-  // TODO: Integrate with Fathom or python-chess-syzygy
-  // For now, placeholder that returns TB_FAILED
-};
 
 #endif // FUNCTIONS_H

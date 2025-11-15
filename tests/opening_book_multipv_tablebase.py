@@ -3,7 +3,8 @@
 
 import sys
 import os
-sys.path.insert(0, 'build')
+
+sys.path.insert(0, "build")
 import c_helpers
 
 print("=" * 80)
@@ -20,17 +21,17 @@ book_path = "book.bin"  # Standard Polyglot book filename
 if os.path.exists(book_path):
     success = book.load(book_path)
     print(f"   Loaded {book_path}: {success}")
-    
+
     # Probe starting position
     starting_fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
     moves = book.probe(starting_fen)
     print(f"   Book moves for starting position: {len(moves)}")
     for move in moves[:5]:  # Show first 5
         print(f"      {move.uci_move}: weight={move.weight}")
-    
+
     best_move = book.probe_best(starting_fen)
     print(f"   Best book move: {best_move}")
-    
+
     weighted_move = book.probe_weighted(starting_fen)
     print(f"   Weighted random move: {weighted_move}")
 else:
@@ -44,19 +45,16 @@ starting_fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
 try:
     # Search for top 3 moves
     pv_lines = c_helpers.multi_pv_search(
-        starting_fen,
-        depth=4,
-        num_lines=3,
-        evaluate=c_helpers.evaluate_with_pst
+        starting_fen, depth=4, num_lines=3, evaluate=c_helpers.evaluate_with_pst
     )
-    
+
     print(f"   Found {len(pv_lines)} principal variations:")
     for i, line in enumerate(pv_lines, 1):
         print(f"      {i}. {line.uci_move} (score: {line.score}, depth: {line.depth})")
         print(f"         PV: {line.pv}")
-    
+
     print(f"   ✓ Multi-PV search working!")
-    
+
 except Exception as e:
     print(f"   ✗ Error: {e}")
 
@@ -66,37 +64,17 @@ tactical_fen = "r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 
 
 try:
     pv_lines = c_helpers.multi_pv_search(
-        tactical_fen,
-        depth=5,
-        num_lines=5,
-        evaluate=c_helpers.evaluate_with_pst
+        tactical_fen, depth=5, num_lines=5, evaluate=c_helpers.evaluate_with_pst
     )
-    
+
     print(f"   Top {len(pv_lines)} moves:")
     for i, line in enumerate(pv_lines, 1):
         print(f"      {i}. {line.uci_move} (score: {line.score})")
-    
+
     print(f"   ✓ Multi-PV tactical analysis working!")
-    
+
 except Exception as e:
     print(f"   ✗ Error: {e}")
-
-# Test 4: Tablebase (will fail - placeholder only)
-print("\n4. Testing Tablebase (Placeholder)...")
-tb = c_helpers.Tablebase()
-print(f"   Tablebase initialized: {tb.is_initialized()}")
-
-# Try to init (will fail - not implemented)
-tb_path = "/path/to/syzygy"
-success = tb.init(tb_path)
-print(f"   Init attempt: {success}")
-print(f"   Max pieces: {tb.max_pieces()}")
-
-# Try to probe (will return TB_FAILED)
-endgame_fen = "8/8/8/4k3/8/8/4K3/4R3 w - - 0 1"
-result = tb.probe_wdl(endgame_fen)
-print(f"   WDL probe result: {result.wdl} (success: {result.success})")
-print(f"   ⚠ Tablebase is placeholder - requires Syzygy/Fathom integration")
 
 # Summary
 print("\n" + "=" * 80)
@@ -104,6 +82,5 @@ print("FEATURE SUMMARY")
 print("=" * 80)
 print("✓ Opening Book API: Ready (requires .bin file)")
 print("✓ Multi-PV Search: Fully functional")
-print("⚠ Tablebase: Placeholder (requires Syzygy integration)")
 print("\nAll C++ APIs successfully exposed to Python!")
 print("=" * 80)

@@ -98,9 +98,9 @@ NB_MODULE(c_helpers, m) {
         "Returns a string describing the GPU and CUDA version.");
 
   // 4. PGN to FEN: Convert PGN string to FEN string
-  m.def("pgn_to_fen", &pgn_to_fen,
-        nb::arg("pgn"),
-        "Convert PGN (Portable Game Notation) string to FEN (Forsyth-Edwards Notation) string.\n"
+  m.def("pgn_to_fen", &pgn_to_fen, nb::arg("pgn"),
+        "Convert PGN (Portable Game Notation) string to FEN (Forsyth-Edwards "
+        "Notation) string.\n"
         "Parses PGN moves and returns the final position as FEN.\n"
         "pgn: PGN string containing game moves");
 
@@ -144,8 +144,7 @@ NB_MODULE(c_helpers, m) {
       .def(nb::init<>(), "Create a new opening book")
       .def("load", &OpeningBook::load, nb::arg("book_path"),
            "Load a Polyglot opening book file (.bin)")
-      .def("is_loaded", &OpeningBook::is_loaded, 
-           "Check if book is loaded")
+      .def("is_loaded", &OpeningBook::is_loaded, "Check if book is loaded")
       .def("probe", &OpeningBook::probe, nb::arg("fen"),
            "Probe book for position, returns list of BookMove")
       .def("probe_best", &OpeningBook::probe_best, nb::arg("fen"),
@@ -161,9 +160,8 @@ NB_MODULE(c_helpers, m) {
       .def_rw("depth", &PVLine::depth, "Search depth")
       .def_rw("pv", &PVLine::pv, "Principal variation");
 
-  m.def("multi_pv_search", &multi_pv_search,
-        nb::arg("fen"), nb::arg("depth"), nb::arg("num_lines"),
-        nb::arg("evaluate"), nb::arg("tt") = nullptr,
+  m.def("multi_pv_search", &multi_pv_search, nb::arg("fen"), nb::arg("depth"),
+        nb::arg("num_lines"), nb::arg("evaluate"), nb::arg("tt") = nullptr,
         nb::arg("num_threads") = 0, nb::arg("killers") = nullptr,
         nb::arg("history") = nullptr, nb::arg("counters") = nullptr,
         "Search for multiple principal variations.\n"
@@ -177,32 +175,4 @@ NB_MODULE(c_helpers, m) {
         "killers: Optional KillerMoves\n"
         "history: Optional HistoryTable\n"
         "counters: Optional CounterMoveTable");
-
-  // Tablebase (placeholder)
-  nb::enum_<WDLScore>(m, "WDLScore")
-      .value("TB_LOSS", TB_LOSS)
-      .value("TB_BLESSED_LOSS", TB_BLESSED_LOSS)
-      .value("TB_DRAW", TB_DRAW)
-      .value("TB_CURSED_WIN", TB_CURSED_WIN)
-      .value("TB_WIN", TB_WIN)
-      .value("TB_FAILED", TB_FAILED);
-
-  nb::class_<TablebaseResult>(m, "TablebaseResult")
-      .def_rw("wdl", &TablebaseResult::wdl, "Win/Draw/Loss result")
-      .def_rw("dtz", &TablebaseResult::dtz, "Distance to zeroing move")
-      .def_rw("success", &TablebaseResult::success, "Probe successful");
-
-  nb::class_<Tablebase>(m, "Tablebase")
-      .def(nb::init<>(), "Create tablebase instance")
-      .def("init", &Tablebase::init, nb::arg("path"),
-           "Initialize tablebase with path to .rtbw files")
-      .def("is_initialized", &Tablebase::is_initialized,
-           "Check if tablebase is initialized")
-      .def("probe_wdl", &Tablebase::probe_wdl, nb::arg("fen"),
-           "Probe Win/Draw/Loss for position")
-      .def("probe_dtz", &Tablebase::probe_dtz, nb::arg("fen"),
-           "Probe Distance-To-Zero for position")
-      .def("max_pieces", &Tablebase::max_pieces,
-           "Maximum pieces supported");
 }
-

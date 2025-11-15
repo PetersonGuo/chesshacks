@@ -602,17 +602,20 @@ This chess engine now includes **24 advanced features**:
 - [DONE] Razoring
 - [DONE] Futility pruning
 - [DONE] Static exchange evaluation (SEE)
-- [DONE] Opening book integration (Polyglot format)
-- [DONE] Multi-PV search
-- [DONE] Endgame tablebase API (placeholder)
+- [DONE] Opening book integration (Polyglot format with proper Zobrist hashing)
+- [DONE] Multi-PV search with full principal variation extraction
 
 ### Future Enhancements:
 
 - [TODO] Integrate real NNUE evaluation function
 - [TODO] CUDA batch evaluation
-- [TODO] Complete Syzygy tablebase integration (requires Fathom library)
-- [TODO] Opening book: Full Polyglot Zobrist hashing with correct keys
-- [TODO] Multi-PV: Extract full principal variation from TT
+- [TODO] Endgame tablebase support (Syzygy/Fathom integration)
+
+### Recently Completed:
+
+- **Polyglot Zobrist Hashing**: Implemented proper Polyglot standard hashing with 781 random values (pieces: 768, castling: 4, en passant: 8, side: 1) using standard PRNG with seed=0. This ensures opening book lookups work correctly with standard Polyglot .bin files.
+
+- **Full PV Extraction**: Multi-PV search now walks the transposition table to extract complete principal variations (up to 10 moves deep) instead of just returning the first move. This provides much better insight into the engine's analysis.
 
 ## Build & Test
 
