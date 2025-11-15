@@ -142,4 +142,7 @@ get_best_move_uci(const std::string &fen, int depth,
                   HistoryTable *history = nullptr,
                   CounterMoveTable *counters = nullptr);
 
+// 4. PGN to FEN: Convert PGN string to FEN string
+std::string pgn_to_fen(const std::string &pgn);
+
 #endif // FUNCTIONS_H

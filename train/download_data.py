@@ -74,6 +74,8 @@ def stream_lichess_database(output_dir: Optional[str] = None, year: Optional[int
                             time_control: Optional[str] = None, min_moves: Optional[int] = None, 
                             max_moves: Optional[int] = None, result_filter: Optional[str] = None, 
                             download_mode: Optional[str] = None,
+                            skip_filter: Optional[bool] = None,
+                            skip_redownload: Optional[bool] = None,
                             config: Optional[TrainingConfig] = None) -> str:
     """
     Download Lichess database and filter games
@@ -87,6 +89,8 @@ def stream_lichess_database(output_dir: Optional[str] = None, year: Optional[int
         max_games_searched: Maximum total games to search (stops regardless of matches)
         min_elo, max_elo, start_date, end_date, time_control, min_moves, max_moves, result_filter: Filters
         download_mode: Download mode - 'streaming' (filter on-the-fly) or 'direct' (download full file first)
+        skip_filter: Skip filtering entirely - use all games (defaults to config.download_skip_filter or False)
+        skip_redownload: Skip re-downloading if file already exists (defaults to config.download_skip_redownload or False)
         config: TrainingConfig instance (optional, for defaults)
     
     Returns:
@@ -98,7 +102,9 @@ def stream_lichess_database(output_dir: Optional[str] = None, year: Optional[int
         year=year,
         month=month,
         rated_only=rated_only,
-        mode=download_mode
+        mode=download_mode,
+        skip_filter=skip_filter,
+        skip_redownload=skip_redownload
     )
     
     output_dir = params['output_dir']
@@ -106,6 +112,8 @@ def stream_lichess_database(output_dir: Optional[str] = None, year: Optional[int
     month = params['month']
     rated_only = params['rated_only']
     download_mode = params['mode']
+    skip_filter = params.get('skip_filter', False)
+    skip_redownload = params.get('skip_redownload', False)
     
     # Default to streaming mode if not specified
     if download_mode is None:
@@ -126,6 +134,29 @@ def stream_lichess_database(output_dir: Optional[str] = None, year: Optional[int
     
     url = f"https://database.lichess.org/standard/{filename}"
     output_path = os.path.join(output_dir, f"filtered_{date_str}.pgn")
+    compressed_path = os.path.join(output_dir, filename)
+    
+    # Check if we should skip re-downloading
+    if skip_redownload:
+        if download_mode == 'direct' and os.path.exists(compressed_path):
+            print(f"Found existing download: {compressed_path}")
+            print(f"Skipping re-download (file size: {os.path.getsize(compressed_path) / (1024**3):.2f} GB)")
+            print("Set skip_redownload=False or delete the file to re-download")
+            # Skip to filtering only
+            return _filter_existing_download(compressed_path, output_path, max_games, max_games_searched,
+                                            min_elo, max_elo, start_date, end_date,
+                                            time_control, min_moves, max_moves, result_filter)
+        elif os.path.exists(output_path):
+            print(f"Found existing filtered file: {output_path}")
+            print("Skipping download and filtering")
+            print("Set skip_redownload=False or delete the file to re-process")
+            return output_path
+    
+    if skip_filter:
+        print(f"Skipping filtering - will use all games from {filename}")
+        # Set filters to None when skipping
+        min_elo = max_elo = start_date = end_date = None
+        time_control = min_moves = max_moves = result_filter = None
     
     if download_mode == 'direct':
         print(f"Downloading full database: {filename}...")
@@ -143,6 +174,72 @@ def stream_lichess_database(output_dir: Optional[str] = None, year: Optional[int
                                              max_games, max_games_searched,
                                              min_elo, max_elo, start_date, end_date,
                                              time_control, min_moves, max_moves, result_filter)
+
+
+def _filter_existing_download(compressed_path: str, output_path: str,
+                              max_games: Optional[int], max_games_searched: Optional[int],
+                              min_elo: Optional[int], max_elo: Optional[int],
+                              start_date: Optional[str], end_date: Optional[str],
+                              time_control: Optional[str], min_moves: Optional[int],
+                              max_moves: Optional[int], result_filter: Optional[str]) -> str:
+    """
+    Filter an already downloaded compressed file
+    """
+    try:
+        import zstandard as zstd
+    except ImportError:
+        raise ImportError(
+            "zstandard package is required. Install it with: pip install zstandard"
+        )
+    
+    print("Filtering games from existing downloaded file...")
+    
+    # Filter the downloaded file
+    dctx = zstd.ZstdDecompressor()
+    games_found = 0
+    games_written = 0
+    
+    with open(compressed_path, 'rb') as compressed_file:
+        with open(output_path, 'w', encoding='utf-8') as out_file:
+            pbar = tqdm(desc="Filtering games", unit=' games', unit_scale=False)
+            
+            try:
+                with dctx.stream_reader(compressed_file) as decompressor:
+                    pgn_file = io.TextIOWrapper(decompressor, encoding='utf-8', errors='ignore')
+                    
+                    while True:
+                        if max_games and games_written >= max_games:
+                            print(f"\nFound {games_written} matching games, stopping")
+                            break
+                        
+                        if max_games_searched and games_found >= max_games_searched:
+                            print(f"\nSearched {games_found} games (limit reached), stopping")
+                            break
+                        
+                        game = chess.pgn.read_game(pgn_file)
+                        if game is None:
+                            break
+                        
+                        games_found += 1
+                        pbar.update(1)
+                        
+                        if should_include_game(game, min_elo, max_elo, start_date,
+                                              end_date, time_control, min_moves,
+                                              max_moves, result_filter):
+                            exporter = chess.pgn.StringExporter(headers=True, variations=True, comments=True)
+                            game_text = game.accept(exporter)
+                            out_file.write(game_text)
+                            out_file.write('\n\n')
+                            games_written += 1
+                            pbar.set_postfix({'matched': games_written})
+            
+            finally:
+                pbar.close()
+    
+    print(f"\nProcessed {games_found} total games, saved {games_written} matching games")
+    print(f"Saved to: {output_path}")
+    
+    return output_path
 
 
 def _direct_download_and_filter(url: str, filename: str, output_path: str, output_dir: str,
@@ -395,7 +492,8 @@ def extract_positions_from_pgn(pgn_path: str, max_games: Optional[int] = None,
                                 start_date: Optional[str] = None, end_date: Optional[str] = None, 
                                 time_control: Optional[str] = None,
                                 min_moves: Optional[int] = None, max_moves: Optional[int] = None, 
-                                result_filter: Optional[str] = None, 
+                                result_filter: Optional[str] = None,
+                                subset_ratio: Optional[float] = None,
                                 config: Optional[TrainingConfig] = None) -> Iterator[Tuple[str, Dict[str, str]]]:
     """
     Extract positions from PGN file with filtering
@@ -414,6 +512,7 @@ def extract_positions_from_pgn(pgn_path: str, max_games: Optional[int] = None,
         min_moves: Minimum moves filter
         max_moves: Maximum moves filter
         result_filter: Result filter
+        subset_ratio: Read only a subset of games (e.g., 0.1 for 10%) (defaults to config.download_subset_ratio)
         config: TrainingConfig instance (optional, for defaults)
     
     Yields:
@@ -423,12 +522,14 @@ def extract_positions_from_pgn(pgn_path: str, max_games: Optional[int] = None,
         config,
         positions_per_game=positions_per_game,
         min_ply=min_ply,
-        max_ply=max_ply
+        max_ply=max_ply,
+        subset_ratio=subset_ratio
     )
     
     positions_per_game = params['positions_per_game']
     min_ply = params['min_ply']
     max_ply = params['max_ply']
+    subset_ratio = params.get('subset_ratio', None)
     if pgn_path.endswith('.zst'):
         try:
             import zstandard as zstd
@@ -455,6 +556,11 @@ def extract_positions_from_pgn(pgn_path: str, max_games: Optional[int] = None,
             game = chess.pgn.read_game(pgn_file)
             if game is None:
                 break
+            
+            # Apply subset ratio - randomly skip games if ratio specified
+            if subset_ratio is not None:
+                if random.random() > subset_ratio:
+                    continue
             
             if not should_include_game(game, min_elo, max_elo, start_date, end_date,
                                      time_control, min_moves, max_moves, result_filter):
@@ -580,6 +686,9 @@ def download_and_process_lichess_data(
     min_ply=None,
     max_ply=None,
     download_mode=None,
+    skip_filter=None,
+    skip_redownload=None,
+    subset_ratio=None,
     config=None
 ):
     """
@@ -601,6 +710,9 @@ def download_and_process_lichess_data(
         min_ply: Minimum ply to sample from (defaults to config.download_min_ply or 10)
         max_ply: Maximum ply to sample from (defaults to config.download_max_ply or 100)
         download_mode: Download mode - 'streaming' (filter on-the-fly, default) or 'direct' (download full file first)
+        skip_filter: Skip filtering entirely - use all games (defaults to config.download_skip_filter or False)
+        skip_redownload: Skip re-downloading if file already exists (defaults to config.download_skip_redownload or False)
+        subset_ratio: Read only a subset of games (e.g., 0.1 for 10%) (defaults to config.download_subset_ratio)
         config: TrainingConfig instance (optional, for defaults)
     """
     config, params = _resolve_config_params(
@@ -618,7 +730,10 @@ def download_and_process_lichess_data(
         batch_size=batch_size,
         min_ply=min_ply,
         max_ply=max_ply,
-        mode=download_mode
+        mode=download_mode,
+        skip_filter=skip_filter,
+        skip_redownload=skip_redownload,
+        subset_ratio=subset_ratio
     )
     
     # Extract resolved parameters
@@ -636,6 +751,9 @@ def download_and_process_lichess_data(
     min_ply = params['min_ply']
     max_ply = params['max_ply']
     download_mode = params['mode']
+    skip_filter = params.get('skip_filter', False)
+    skip_redownload = params.get('skip_redownload', False)
+    subset_ratio = params.get('subset_ratio', None)
     
     os.makedirs(output_dir, exist_ok=True)
     
@@ -645,7 +763,7 @@ def download_and_process_lichess_data(
     pgn_path = stream_lichess_database(
         output_dir, year, month, rated_only, max_games, max_games_searched,
         min_elo, max_elo, start_date, end_date, time_control,
-        min_moves, max_moves, result_filter, download_mode, config
+        min_moves, max_moves, result_filter, download_mode, skip_filter, skip_redownload, config
     )
     
     print("\n" + "=" * 80)
@@ -654,6 +772,9 @@ def download_and_process_lichess_data(
     
     positions = []
     position_count = 0
+    
+    if subset_ratio is not None:
+        print(f"Using subset ratio: {subset_ratio:.1%} of games")
     
     for fen, game_info in extract_positions_from_pgn(
         pgn_path, 
@@ -669,6 +790,7 @@ def download_and_process_lichess_data(
         min_moves=None,
         max_moves=None,
         result_filter=None,
+        subset_ratio=subset_ratio,
         config=config
     ):
         positions.append((fen, game_info))
@@ -782,6 +904,12 @@ def main():
     parser.add_argument('--download-mode', type=str, default='streaming',
                        choices=['streaming', 'direct'],
                        help='Download mode: streaming (filter on-the-fly, saves bandwidth) or direct (download full file first) (default: streaming)')
+    parser.add_argument('--skip-filter', action='store_true',
+                       help='Skip filtering entirely - use all games from the database')
+    parser.add_argument('--skip-redownload', action='store_true',
+                       help='Skip re-downloading if file already exists')
+    parser.add_argument('--subset-ratio', type=float, default=None,
+                       help='Read only a subset of games (e.g., 0.1 for 10%%). None = all games')
     
     args = parser.parse_args()
     
@@ -799,6 +927,9 @@ def main():
         num_workers=args.num_workers,
         batch_size=args.batch_size,
         download_mode=args.download_mode,
+        skip_filter=args.skip_filter,
+        skip_redownload=args.skip_redownload,
+        subset_ratio=args.subset_ratio,
         config=config
     )
 

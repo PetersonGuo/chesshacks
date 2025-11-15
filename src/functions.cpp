@@ -6,6 +6,9 @@
 #include <iostream>
 #include <thread>
 #include <vector>
+#include <sstream>
+#include <regex>
+#include <cctype>
 
 // ============================================================================
 // CUDA AVAILABILITY CHECK
@@ -1392,4 +1395,235 @@ get_best_move_uci(const std::string &fen, int depth,
   }
 
   return ""; // Should not reach here
+}
+
+// ============================================================================
+// 4. PGN TO FEN - Convert PGN string to FEN string
+// ============================================================================
+
+// Helper function to parse SAN (Standard Algebraic Notation) move
+// Returns true if move was successfully parsed and applied
+static bool parse_and_apply_san(ChessBoard &board, const std::string &san_move) {
+  // Remove check/checkmate markers
+  std::string move = san_move;
+  if (!move.empty() && (move.back() == '+' || move.back() == '#')) {
+    move.pop_back();
+  }
+  
+  // Handle castling
+  if (move == "O-O" || move == "0-0" || move == "o-o") {
+    // Kingside castling
+    bool is_white = board.is_white_to_move();
+    int king_rank = is_white ? 0 : 7;
+    int king_from = king_rank * 8 + 4;  // e1 or e8
+    int king_to = king_rank * 8 + 6;    // g1 or g8
+    board.make_move(Move(king_from, king_to));
+    return true;
+  } else if (move == "O-O-O" || move == "0-0-0" || move == "o-o-o") {
+    // Queenside castling
+    bool is_white = board.is_white_to_move();
+    int king_rank = is_white ? 0 : 7;
+    int king_from = king_rank * 8 + 4;  // e1 or e8
+    int king_to = king_rank * 8 + 2;    // c1 or c8
+    board.make_move(Move(king_from, king_to));
+    return true;
+  }
+  
+  // Parse piece type (K, Q, R, B, N, or pawn if empty)
+  Piece piece_type = EMPTY;
+  int piece_idx = 0;
+  if (move.length() > 0 && std::isupper(move[0])) {
+    char p = std::toupper(move[0]);
+    bool is_white = board.is_white_to_move();
+    switch (p) {
+      case 'K': piece_type = is_white ? W_KING : B_KING; break;
+      case 'Q': piece_type = is_white ? W_QUEEN : B_QUEEN; break;
+      case 'R': piece_type = is_white ? W_ROOK : B_ROOK; break;
+      case 'B': piece_type = is_white ? W_BISHOP : B_BISHOP; break;
+      case 'N': piece_type = is_white ? W_KNIGHT : B_KNIGHT; break;
+      default: return false;
+    }
+    piece_idx = 1;
+  } else {
+    // Pawn move
+    bool is_white = board.is_white_to_move();
+    piece_type = is_white ? W_PAWN : B_PAWN;
+  }
+  
+  // Check for capture
+  bool is_capture = false;
+  if (piece_idx < static_cast<int>(move.length()) && move[piece_idx] == 'x') {
+    is_capture = true;
+    piece_idx++;
+  }
+  
+  // Parse promotion (e.g., e8=Q)
+  Piece promotion = EMPTY;
+  size_t eq_pos = move.find('=');
+  if (eq_pos != std::string::npos && eq_pos + 1 < move.length()) {
+    char prom_char = std::toupper(move[eq_pos + 1]);
+    bool is_white = board.is_white_to_move();
+    switch (prom_char) {
+      case 'Q': promotion = is_white ? W_QUEEN : B_QUEEN; break;
+      case 'R': promotion = is_white ? W_ROOK : B_ROOK; break;
+      case 'B': promotion = is_white ? W_BISHOP : B_BISHOP; break;
+      case 'N': promotion = is_white ? W_KNIGHT : B_KNIGHT; break;
+      default: return false;
+    }
+    move = move.substr(0, eq_pos);
+  }
+  
+  // Parse target square (last 2 characters, e.g., "e4", "d5")
+  if (move.length() < 2) return false;
+  
+  std::string target_str = move.substr(move.length() - 2);
+  if (target_str[0] < 'a' || target_str[0] > 'h' || 
+      target_str[1] < '1' || target_str[1] > '8') {
+    return false;
+  }
+  
+  int target_file = target_str[0] - 'a';
+  int target_rank = target_str[1] - '1';
+  int target_square = target_rank * 8 + target_file;
+  
+  // Find source square
+  // Generate all legal moves and find matching one
+  std::vector<Move> legal_moves = board.generate_legal_moves();
+  
+  // Filter moves by target square and piece type
+  std::vector<Move> candidates;
+  for (const Move &m : legal_moves) {
+    if (m.to == target_square) {
+      Piece moved_piece = board.get_piece_at(m.from);
+      if (std::abs(moved_piece) == std::abs(piece_type) || 
+          (piece_type == (board.is_white_to_move() ? W_PAWN : B_PAWN) && 
+           std::abs(moved_piece) == std::abs(W_PAWN))) {
+        if (promotion == EMPTY || m.promotion == promotion) {
+          candidates.push_back(m);
+        }
+      }
+    }
+  }
+  
+  // Disambiguation handling (e.g., Nbd2, R1e1)
+  if (candidates.size() > 1 && piece_idx < static_cast<int>(move.length() - 2)) {
+    std::string disambig = move.substr(piece_idx, move.length() - piece_idx - 2);
+    std::vector<Move> filtered;
+    for (const Move &m : candidates) {
+      bool matches = true;
+      for (char c : disambig) {
+        if (std::isdigit(c)) {
+          // Rank disambiguation (e.g., R1e1)
+          int rank = c - '1';
+          if (m.from / 8 != rank) {
+            matches = false;
+            break;
+          }
+        } else if (std::isalpha(c)) {
+          // File disambiguation (e.g., Nbd2)
+          int file = std::tolower(c) - 'a';
+          if (m.from % 8 != file) {
+            matches = false;
+            break;
+          }
+        }
+      }
+      if (matches) {
+        filtered.push_back(m);
+      }
+    }
+    if (!filtered.empty()) {
+      candidates = filtered;
+    }
+  }
+  
+  // Apply the first matching move
+  if (!candidates.empty()) {
+    board.make_move(candidates[0]);
+    return true;
+  }
+  
+  return false;
+}
+
+std::string pgn_to_fen(const std::string &pgn) {
+  // Start with initial position
+  ChessBoard board("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+  
+  // Simple PGN parser - extract move notation
+  // Remove headers and comments
+  std::string moves_text = pgn;
+  
+  // Remove headers (lines starting with [)
+  std::istringstream iss(moves_text);
+  std::string line;
+  std::string clean_moves;
+  bool in_headers = true;
+  
+  while (std::getline(iss, line)) {
+    if (line.empty()) {
+      in_headers = false;
+      continue;
+    }
+    if (in_headers && (line[0] == '[' || line.find("[Event") == 0 || 
+                       line.find("[Site") == 0 || line.find("[Date") == 0 ||
+                       line.find("[White") == 0 || line.find("[Black") == 0 ||
+                       line.find("[Result") == 0)) {
+      continue;
+    }
+    if (!in_headers || line[0] != '[') {
+      clean_moves += line + " ";
+      in_headers = false;
+    }
+  }
+  
+  // Extract move numbers and SAN moves
+  // Pattern: move_number. SAN move (e.g., "1. e4 e5 2. Nf3 Nc6")
+  std::regex move_pattern(R"(\d+\.\s*([^\s]+\s+[^\s]+|[^\s]+))");
+  std::smatch matches;
+  std::string::const_iterator search_start(clean_moves.cbegin());
+  
+  std::vector<std::string> parsed_moves;
+  while (std::regex_search(search_start, clean_moves.cend(), matches, move_pattern)) {
+    std::string move_pair = matches[1].str();
+    
+    // Split white and black moves
+    std::istringstream move_stream(move_pair);
+    std::string white_move, black_move;
+    move_stream >> white_move;
+    if (move_stream >> black_move) {
+      parsed_moves.push_back(white_move);
+      parsed_moves.push_back(black_move);
+    } else {
+      parsed_moves.push_back(white_move);
+    }
+    
+    search_start = matches[0].second;
+  }
+  
+  // Also try simple space-separated moves (for PGN without move numbers)
+  if (parsed_moves.empty()) {
+    std::istringstream move_stream(clean_moves);
+    std::string move;
+    while (move_stream >> move) {
+      // Skip move numbers, result markers, etc.
+      if (move.find('.') == std::string::npos && 
+          move != "1-0" && move != "0-1" && move != "1/2-1/2" && 
+          move != "*" && move.find('-') == std::string::npos) {
+        parsed_moves.push_back(move);
+      }
+    }
+  }
+  
+  // Apply moves to board
+  for (const std::string &move : parsed_moves) {
+    if (!parse_and_apply_san(board, move)) {
+      // If move parsing fails, try to continue or return current FEN
+      // For robustness, we'll continue with next move
+      continue;
+    }
+  }
+  
+  // Return final FEN
+  return board.to_fen();
 }

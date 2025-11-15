@@ -97,6 +97,13 @@ NB_MODULE(c_helpers, m) {
         "Get information about available CUDA devices.\n"
         "Returns a string describing the GPU and CUDA version.");
 
+  // 4. PGN to FEN: Convert PGN string to FEN string
+  m.def("pgn_to_fen", &pgn_to_fen,
+        nb::arg("pgn"),
+        "Convert PGN (Portable Game Notation) string to FEN (Forsyth-Edwards Notation) string.\n"
+        "Parses PGN moves and returns the final position as FEN.\n"
+        "pgn: PGN string containing game moves");
+
   // Best move finders
   m.def("find_best_move", &find_best_move, nb::arg("fen"), nb::arg("depth"),
         nb::arg("evaluate"), nb::arg("tt") = nullptr,
