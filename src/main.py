@@ -12,15 +12,56 @@ if build_path not in sys.path:
 
 import c_helpers
 
+# Import CUDA checker utility
+try:
+    from .cuda_check import is_cuda_available, get_cuda_info
+    CUDA_CHECKER_AVAILABLE = True
+except ImportError:
+    CUDA_CHECKER_AVAILABLE = False
+
 # Detect CUDA availability
 def has_cuda():
     """Check if CUDA is available on this system"""
+    # First check via C++ bindings (if compiled with CUDA)
+    try:
+        if c_helpers.is_cuda_available():
+            return True
+    except AttributeError:
+        pass
+    
+    # Then check via PyTorch if available
+    if CUDA_CHECKER_AVAILABLE:
+        cuda_available, _ = is_cuda_available()
+        if cuda_available:
+            return True
+    
+    # Finally check nvidia-smi as fallback
     try:
         import subprocess
         result = subprocess.run(['nvidia-smi'], capture_output=True, timeout=1)
         return result.returncode == 0
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return False
+
+def get_cuda_status():
+    """Get detailed CUDA status information"""
+    # Try C++ method first
+    try:
+        cpp_info = c_helpers.get_cuda_info()
+        return cpp_info
+    except AttributeError:
+        pass
+    
+    # Try Python method
+    if CUDA_CHECKER_AVAILABLE:
+        cuda_available, msg = is_cuda_available()
+        if cuda_available:
+            info = get_cuda_info()
+            if info:
+                return f"{info['device_count']} GPU(s): {info['devices'][0]['name']}"
+        return msg
+    
+    return "CUDA detection not available"
 
 # Global configuration
 USE_CUDA = has_cuda()
@@ -32,6 +73,8 @@ transposition_table = c_helpers.TranspositionTable()
 
 print(f"Chess Engine initialized:")
 print(f"  - CUDA available: {USE_CUDA}")
+if USE_CUDA:
+    print(f"  - CUDA info: {get_cuda_status()}")
 print(f"  - Search depth: {SEARCH_DEPTH}")
 print(f"  - Threads: {NUM_THREADS if NUM_THREADS > 0 else 'auto'}")
 

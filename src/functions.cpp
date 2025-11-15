@@ -7,6 +7,39 @@
 #include <vector>
 
 // ============================================================================
+// CUDA AVAILABILITY CHECK
+// ============================================================================
+
+bool is_cuda_available() {
+#ifdef __CUDACC__
+  int device_count = 0;
+  cudaError_t error = cudaGetDeviceCount(&device_count);
+  return (error == cudaSuccess && device_count > 0);
+#else
+  return false;
+#endif
+}
+
+std::string get_cuda_info() {
+#ifdef __CUDACC__
+  int device_count = 0;
+  cudaError_t error = cudaGetDeviceCount(&device_count);
+  
+  if (error != cudaSuccess || device_count == 0) {
+    return "CUDA not available";
+  }
+  
+  cudaDeviceProp prop;
+  cudaGetDeviceProperties(&prop, 0);
+  
+  return std::string(prop.name) + " (CUDA Compute " + 
+         std::to_string(prop.major) + "." + std::to_string(prop.minor) + ")";
+#else
+  return "CUDA not compiled (use nvcc to enable)";
+#endif
+}
+
+// ============================================================================
 // KILLER MOVES IMPLEMENTATION
 // ============================================================================
 
@@ -137,12 +170,135 @@ size_t TranspositionTable::size() const {
 // MOVE ORDERING HELPERS
 // ============================================================================
 
+// Piece-Square Tables for positional evaluation
+// Tables are from white's perspective (flipped for black)
+namespace PieceSquareTables {
+  // Pawn
+  const int pawn_table[64] = {
+      0,  0,  0,  0,  0,  0,  0,  0,
+     50, 50, 50, 50, 50, 50, 50, 50,
+     10, 10, 20, 30, 30, 20, 10, 10,
+      5,  5, 10, 25, 25, 10,  5,  5,
+      0,  0,  0, 20, 20,  0,  0,  0,
+      5, -5,-10,  0,  0,-10, -5,  5,
+      5, 10, 10,-20,-20, 10, 10,  5,
+      0,  0,  0,  0,  0,  0,  0,  0
+  };
+  
+  // Knight
+  const int knight_table[64] = {
+    -50,-40,-30,-30,-30,-30,-40,-50,
+    -40,-20,  0,  0,  0,  0,-20,-40,
+    -30,  0, 10, 15, 15, 10,  0,-30,
+    -30,  5, 15, 20, 20, 15,  5,-30,
+    -30,  0, 15, 20, 20, 15,  0,-30,
+    -30,  5, 10, 15, 15, 10,  5,-30,
+    -40,-20,  0,  5,  5,  0,-20,-40,
+    -50,-40,-30,-30,-30,-30,-40,-50
+  };
+  
+  // Bishop
+  const int bishop_table[64] = {
+    -20,-10,-10,-10,-10,-10,-10,-20,
+    -10,  0,  0,  0,  0,  0,  0,-10,
+    -10,  0,  5, 10, 10,  5,  0,-10,
+    -10,  5,  5, 10, 10,  5,  5,-10,
+    -10,  0, 10, 10, 10, 10,  0,-10,
+    -10, 10, 10, 10, 10, 10, 10,-10,
+    -10,  5,  0,  0,  0,  0,  5,-10,
+    -20,-10,-10,-10,-10,-10,-10,-20
+  };
+  
+  // Rook
+  const int rook_table[64] = {
+      0,  0,  0,  0,  0,  0,  0,  0,
+      5, 10, 10, 10, 10, 10, 10,  5,
+     -5,  0,  0,  0,  0,  0,  0, -5,
+     -5,  0,  0,  0,  0,  0,  0, -5,
+     -5,  0,  0,  0,  0,  0,  0, -5,
+     -5,  0,  0,  0,  0,  0,  0, -5,
+     -5,  0,  0,  0,  0,  0,  0, -5,
+      0,  0,  0,  5,  5,  0,  0,  0
+  };
+  
+  // Queen
+  const int queen_table[64] = {
+    -20,-10,-10, -5, -5,-10,-10,-20,
+    -10,  0,  0,  0,  0,  0,  0,-10,
+    -10,  0,  5,  5,  5,  5,  0,-10,
+     -5,  0,  5,  5,  5,  5,  0, -5,
+      0,  0,  5,  5,  5,  5,  0, -5,
+    -10,  5,  5,  5,  5,  5,  0,-10,
+    -10,  0,  5,  0,  0,  0,  0,-10,
+    -20,-10,-10, -5, -5,-10,-10,-20
+  };
+  
+  // King middlegame
+  const int king_middlegame_table[64] = {
+    -30,-40,-40,-50,-50,-40,-40,-30,
+    -30,-40,-40,-50,-50,-40,-40,-30,
+    -30,-40,-40,-50,-50,-40,-40,-30,
+    -30,-40,-40,-50,-50,-40,-40,-30,
+    -20,-30,-30,-40,-40,-30,-30,-20,
+    -10,-20,-20,-20,-20,-20,-20,-10,
+     20, 20,  0,  0,  0,  0, 20, 20,
+     20, 30, 10,  0,  0, 10, 30, 20
+  };
+}
+
+// Get piece-square table value
+int get_piece_square_value(Piece piece, int square) {
+  int abs_piece = piece < 0 ? -piece : piece;
+  bool is_white = piece > 0;
+  
+  // Flip square for black pieces (mirror vertically)
+  int eval_square = is_white ? square : (63 - square);
+  
+  switch (abs_piece) {
+    case 1: return PieceSquareTables::pawn_table[eval_square];      // Pawn
+    case 2: return PieceSquareTables::knight_table[eval_square];    // Knight
+    case 3: return PieceSquareTables::bishop_table[eval_square];    // Bishop
+    case 4: return PieceSquareTables::rook_table[eval_square];      // Rook
+    case 5: return PieceSquareTables::queen_table[eval_square];     // Queen
+    case 6: return PieceSquareTables::king_middlegame_table[eval_square]; // King
+    default: return 0;
+  }
+}
+
 // MVV-LVA: Most Valuable Victim - Least Valuable Attacker
 int get_piece_value(Piece piece) {
   int abs_piece = piece < 0 ? -piece : piece;
   static const int piece_values[] = {0,   100, 320,  330,
                                      500, 900, 20000}; // None, P, N, B, R, Q, K
   return piece_values[abs_piece];
+}
+
+// Enhanced evaluation with piece-square tables
+int evaluate_with_pst(const std::string &fen) {
+  ChessBoard board;
+  board.from_fen(fen);
+  
+  int score = 0;
+  
+  // Evaluate all pieces on the board
+  for (int square = 0; square < 64; square++) {
+    Piece piece = board.get_piece_at(square);
+    if (piece != EMPTY) {
+      // Material value
+      int material = get_piece_value(piece);
+      // Positional bonus from piece-square tables
+      int positional = get_piece_square_value(piece, square);
+      
+      // Add to score (white pieces are positive, black are negative)
+      if (piece > 0) {
+        score += material + positional;
+      } else {
+        score -= material + positional;
+      }
+    }
+  }
+  
+  return score;
 }
 
 int mvv_lva_score(const ChessBoard &board, const Move &move) {
@@ -425,6 +581,17 @@ alpha_beta_internal(const std::string &fen, int depth, int alpha, int beta,
     return score;
   }
 
+  // Internal Iterative Deepening (IID)
+  // If we don't have a TT move at high depths, do a shallow search to find one
+  if (tt_best_move.empty() && depth >= 5) {
+    // Do a reduced depth search to populate TT with a best move
+    int iid_depth = depth - 2;
+    alpha_beta_internal(fen, iid_depth, alpha, beta, maximizingPlayer, evaluate,
+                       tt, use_quiescence, killers, ply, history, allow_null_move);
+    // After this search, the TT should have a best move for this position
+    tt.probe(fen, iid_depth, alpha, beta, cached_score, tt_best_move);
+  }
+
   // Move ordering with TT, killers, MVV-LVA, history, promotions
   order_moves(board, legal_moves, &tt, fen, killers, ply, history);
 
@@ -442,31 +609,51 @@ alpha_beta_internal(const std::string &fen, int depth, int alpha, int beta,
       bool is_capture = board.is_capture(move);
       bool is_promotion = (move.promotion != EMPTY);
       
-      // Late Move Reduction (LMR)
-      // Reduce depth for later moves that are less likely to be best
-      bool do_lmr = false;
-      int reduction = 0;
-      
-      if (depth >= 3 && moves_searched >= 4 && !is_capture && !is_promotion && !board.is_check()) {
-        do_lmr = true;
-        // Reduce more for later moves
-        reduction = 1;
-        if (moves_searched >= 8) reduction = 2;
-      }
-      
-      if (do_lmr) {
-        // Search with reduced depth
-        eval = alpha_beta_internal(child_fen, depth - 1 - reduction, alpha, beta, false,
-                                   evaluate, tt, use_quiescence, killers, ply + 1, history);
-        // If reduced search fails high, re-search at full depth
-        if (eval > alpha) {
-          eval = alpha_beta_internal(child_fen, depth - 1, alpha, beta, false,
-                                     evaluate, tt, use_quiescence, killers, ply + 1, history);
-        }
-      } else {
-        // Normal search
+      // Principal Variation Search (PVS)
+      // First move gets full window, rest get null window (scout search)
+      if (moves_searched == 0) {
+        // First move - search with full window
         eval = alpha_beta_internal(child_fen, depth - 1, alpha, beta, false,
                                    evaluate, tt, use_quiescence, killers, ply + 1, history);
+      } else {
+        // Late Move Reduction (LMR)
+        bool do_lmr = false;
+        int reduction = 0;
+        
+        if (depth >= 3 && moves_searched >= 4 && !is_capture && !is_promotion && !board.is_check()) {
+          do_lmr = true;
+          reduction = 1;
+          if (moves_searched >= 8) reduction = 2;
+        }
+        
+        // Scout search with null window
+        if (do_lmr) {
+          // LMR + null window
+          eval = alpha_beta_internal(child_fen, depth - 1 - reduction, alpha, alpha + 1, false,
+                                     evaluate, tt, use_quiescence, killers, ply + 1, history);
+          // If scout search fails high, re-search with reduced depth but full window
+          if (eval > alpha && eval < beta) {
+            eval = alpha_beta_internal(child_fen, depth - 1, alpha, beta, false,
+                                       evaluate, tt, use_quiescence, killers, ply + 1, history);
+          } else if (eval > alpha) {
+            // Double re-search: first without reduction, then with full window
+            eval = alpha_beta_internal(child_fen, depth - 1, alpha, alpha + 1, false,
+                                       evaluate, tt, use_quiescence, killers, ply + 1, history);
+            if (eval > alpha && eval < beta) {
+              eval = alpha_beta_internal(child_fen, depth - 1, alpha, beta, false,
+                                         evaluate, tt, use_quiescence, killers, ply + 1, history);
+            }
+          }
+        } else {
+          // PVS null window search
+          eval = alpha_beta_internal(child_fen, depth - 1, alpha, alpha + 1, false,
+                                     evaluate, tt, use_quiescence, killers, ply + 1, history);
+          // If scout search fails high, re-search with full window
+          if (eval > alpha && eval < beta) {
+            eval = alpha_beta_internal(child_fen, depth - 1, alpha, beta, false,
+                                       evaluate, tt, use_quiescence, killers, ply + 1, history);
+          }
+        }
       }
       
       board.unmake_move(move);
@@ -512,29 +699,50 @@ alpha_beta_internal(const std::string &fen, int depth, int alpha, int beta,
       bool is_capture = board.is_capture(move);
       bool is_promotion = (move.promotion != EMPTY);
       
-      // Late Move Reduction (LMR)
-      bool do_lmr = false;
-      int reduction = 0;
-      
-      if (depth >= 3 && moves_searched >= 4 && !is_capture && !is_promotion && !board.is_check()) {
-        do_lmr = true;
-        reduction = 1;
-        if (moves_searched >= 8) reduction = 2;
-      }
-      
-      if (do_lmr) {
-        // Search with reduced depth
-        eval = alpha_beta_internal(child_fen, depth - 1 - reduction, alpha, beta, true,
-                                   evaluate, tt, use_quiescence, killers, ply + 1, history);
-        // If reduced search fails low, re-search at full depth
-        if (eval < beta) {
-          eval = alpha_beta_internal(child_fen, depth - 1, alpha, beta, true,
-                                     evaluate, tt, use_quiescence, killers, ply + 1, history);
-        }
-      } else {
-        // Normal search
+      // Principal Variation Search (PVS)
+      if (moves_searched == 0) {
+        // First move - search with full window
         eval = alpha_beta_internal(child_fen, depth - 1, alpha, beta, true,
                                    evaluate, tt, use_quiescence, killers, ply + 1, history);
+      } else {
+        // Late Move Reduction (LMR)
+        bool do_lmr = false;
+        int reduction = 0;
+        
+        if (depth >= 3 && moves_searched >= 4 && !is_capture && !is_promotion && !board.is_check()) {
+          do_lmr = true;
+          reduction = 1;
+          if (moves_searched >= 8) reduction = 2;
+        }
+        
+        // Scout search with null window
+        if (do_lmr) {
+          // LMR + null window
+          eval = alpha_beta_internal(child_fen, depth - 1 - reduction, beta - 1, beta, true,
+                                     evaluate, tt, use_quiescence, killers, ply + 1, history);
+          // If scout search fails low, re-search
+          if (eval < beta && eval > alpha) {
+            eval = alpha_beta_internal(child_fen, depth - 1, alpha, beta, true,
+                                       evaluate, tt, use_quiescence, killers, ply + 1, history);
+          } else if (eval < beta) {
+            // Double re-search
+            eval = alpha_beta_internal(child_fen, depth - 1, beta - 1, beta, true,
+                                       evaluate, tt, use_quiescence, killers, ply + 1, history);
+            if (eval < beta && eval > alpha) {
+              eval = alpha_beta_internal(child_fen, depth - 1, alpha, beta, true,
+                                         evaluate, tt, use_quiescence, killers, ply + 1, history);
+            }
+          }
+        } else {
+          // PVS null window search
+          eval = alpha_beta_internal(child_fen, depth - 1, beta - 1, beta, true,
+                                     evaluate, tt, use_quiescence, killers, ply + 1, history);
+          // If scout search fails low, re-search with full window
+          if (eval < beta && eval > alpha) {
+            eval = alpha_beta_internal(child_fen, depth - 1, alpha, beta, true,
+                                       evaluate, tt, use_quiescence, killers, ply + 1, history);
+          }
+        }
       }
       
       board.unmake_move(move);

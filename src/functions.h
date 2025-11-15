@@ -7,6 +7,7 @@
 #include <unordered_map>
 #include <vector>
 #include <mutex>
+#include "chess_board.h"
 
 const int MIN = INT_MIN;
 const int MAX = INT_MAX;
@@ -84,5 +85,11 @@ int alpha_beta_cuda(const std::string &fen, int depth, int alpha, int beta,
                     TranspositionTable *tt = nullptr,
                     KillerMoves *killers = nullptr,
                     HistoryTable *history = nullptr);
+
+// HELPER FUNCTIONS
+int get_piece_square_value(Piece piece, int square);
+int evaluate_with_pst(const std::string &fen);
+bool is_cuda_available();
+std::string get_cuda_info();
 
 #endif // FUNCTIONS_H

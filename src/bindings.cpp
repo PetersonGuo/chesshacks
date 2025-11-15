@@ -76,5 +76,20 @@ NB_MODULE(c_helpers, m) {
         "tt: Optional TranspositionTable instance\n"
         "killers: Optional KillerMoves instance\n"
         "history: Optional HistoryTable instance");
+  
+  // Evaluation function with piece-square tables
+  m.def("evaluate_with_pst", &evaluate_with_pst,
+        nb::arg("fen"),
+        "Enhanced evaluation function using material + piece-square tables.\n"
+        "Provides positional bonuses based on piece placement.");
+  
+  // CUDA availability check
+  m.def("is_cuda_available", &is_cuda_available,
+        "Check if CUDA is available for GPU acceleration.\n"
+        "Returns True if CUDA devices are detected and accessible.");
+  
+  m.def("get_cuda_info", &get_cuda_info,
+        "Get information about available CUDA devices.\n"
+        "Returns a string describing the GPU and CUDA version.");
 }
 

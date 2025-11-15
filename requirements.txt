@@ -17,7 +17,11 @@ typing_extensions==4.15.0
 uvicorn==0.38.0
 nanobind==2.9.2
 
-# NNUE Training dependencies
+# NNUE Training and CUDA detection dependencies
 torch>=2.0.0
 numpy>=1.24.0
 tqdm>=4.65.0
+
+# Optional: For CUDA GPU acceleration support, install PyTorch with CUDA:
+# conda install pytorch torchvision torchaudio pytorch-cuda=11.8 -c pytorch -c nvidia
+# Or: pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
