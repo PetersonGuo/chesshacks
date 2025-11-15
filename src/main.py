@@ -2,6 +2,14 @@ from .utils import chess_manager, GameContext
 from chess import Move
 import random
 import time
+import sys
+import os
+
+# Add build directory to path so c_helpers can be imported
+build_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'build')
+if build_path not in sys.path:
+    sys.path.insert(0, build_path)
+
 import c_helpers
 
 # Write code here that runs once

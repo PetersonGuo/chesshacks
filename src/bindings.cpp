@@ -8,10 +8,6 @@ namespace nb = nanobind;
 NB_MODULE(c_helpers, m) {
     m.doc() = "ChessHacks C++ extension module";
 
-    m.def("alpha_beta", []() {
-    }, "A function for alpha-beta pruning");
-
-    m.def("add", &add,
-          nb::arg("a"), nb::arg("b"),
-          "Add two integers");
+    m.def("alpha_beta", &alpha_beta, nb::arg("node"), nb::arg("depth"), nb::arg("alpha"), nb::arg("beta"), nb::arg("maximizingPlayer"),
+          "A function for alpha-beta pruning");
 }
