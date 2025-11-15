@@ -590,6 +590,12 @@ def extract_positions_from_pgn(pgn_path: str, max_games: Optional[int] = None,
     min_ply = params['min_ply']
     max_ply = params['max_ply']
     subset_ratio = params.get('subset_ratio', None)
+    
+    # Track file handles for proper cleanup
+    pgn_file = None
+    file_handle = None
+    decompressor_reader = None
+    
     if pgn_path.endswith('.zst'):
         try:
             import zstandard as zstd
@@ -600,9 +606,9 @@ def extract_positions_from_pgn(pgn_path: str, max_games: Optional[int] = None,
             )
         
         dctx = zstd.ZstdDecompressor()
-        with open(pgn_path, 'rb') as f:
-            with dctx.stream_reader(f) as reader:
-                pgn_file = io.TextIOWrapper(reader, encoding='utf-8')
+        file_handle = open(pgn_path, 'rb')
+        decompressor_reader = dctx.stream_reader(file_handle)
+        pgn_file = io.TextIOWrapper(decompressor_reader, encoding='utf-8')
     else:
         pgn_file = open(pgn_path, 'r', encoding='utf-8', errors='ignore')
     
@@ -660,8 +666,22 @@ def extract_positions_from_pgn(pgn_path: str, max_games: Optional[int] = None,
                 print(f"Processed {game_count} games...")
     
     finally:
-        if not pgn_path.endswith('.zst'):
-            pgn_file.close()
+        # Close file handles in reverse order of opening
+        if pgn_file:
+            try:
+                pgn_file.close()
+            except:
+                pass
+        if decompressor_reader:
+            try:
+                decompressor_reader.close()
+            except:
+                pass
+        if file_handle:
+            try:
+                file_handle.close()
+            except:
+                pass
 
 
 def evaluate_position_with_stockfish(fen: str, engine: chess.engine.SimpleEngine, 
