@@ -148,6 +148,7 @@ def stream_lichess_database(output_dir: Optional[str] = None, year: Optional[int
     year = params['year']
     month = params['month']
     rated_only = params['rated_only']
+    download_mode = params.get('mode', 'streaming')
     skip_redownload = params.get('skip_redownload', True)
 
     # Auto-detect latest database if year/month not specified
@@ -167,18 +168,121 @@ def stream_lichess_database(output_dir: Optional[str] = None, year: Optional[int
     url = f"https://database.lichess.org/standard/{filename}"
     compressed_path = os.path.join(output_dir, filename)
 
-    # Check if we should skip re-downloading
-    if skip_redownload and os.path.exists(compressed_path):
+    # Check if we should skip re-downloading (only for direct mode)
+    if download_mode == 'direct' and skip_redownload and os.path.exists(compressed_path):
         print(f"Found existing download: {compressed_path}")
         print(f"Skipping re-download (file size: {os.path.getsize(compressed_path) / (1024**3):.2f} GB)")
         print("Set skip_redownload=False or delete the file to re-download")
         return compressed_path
 
-    # Download the full database file
-    print(f"Downloading Lichess database: {filename}")
-    print(f"URL: {url}")
-    print(f"Downloading to: {compressed_path}")
-    return _direct_download_only(url, compressed_path)
+    # Use streaming mode to download only needed games
+    if download_mode == 'streaming':
+        # Check if we already have a streaming file with enough games
+        if max_games:
+            streaming_filename = f"lichess_games_streamed_{max_games}.pgn"
+            streaming_path = os.path.join(output_dir, streaming_filename)
+            if skip_redownload and os.path.exists(streaming_path):
+                # Count games in existing file to verify it has enough
+                try:
+                    with open(streaming_path, 'r', encoding='utf-8') as f:
+                        existing_games = sum(1 for line in f if line.startswith('[Event'))
+                    if existing_games >= max_games:
+                        print(f"Found existing streaming file: {streaming_path}")
+                        print(f"  Games: {existing_games}")
+                        print(f"  File size: {os.path.getsize(streaming_path) / (1024**2):.2f} MB")
+                        print("Skipping re-download. Set skip_redownload=False to re-download")
+                        return streaming_path
+                except Exception as e:
+                    print(f"Warning: Could not verify existing streaming file: {e}")
+                    print("Will re-download...")
+        
+        print(f"Streaming Lichess database: {filename}")
+        print(f"URL: {url}")
+        print(f"Mode: Streaming (will only download games needed)")
+        return _stream_download_games(url, output_dir, max_games)
+    else:
+        # Download the full database file
+        print(f"Downloading Lichess database: {filename}")
+        print(f"URL: {url}")
+        print(f"Downloading to: {compressed_path}")
+        return _direct_download_only(url, compressed_path)
+
+
+def _stream_download_games(url: str, output_dir: str, max_games: Optional[int] = None) -> str:
+    """
+    Stream download from URL, decompress on-the-fly, and save only the games we need
+    
+    Args:
+        url: URL to download from
+        output_dir: Directory to save the output PGN file
+        max_games: Maximum number of games to download (None = all)
+    
+    Returns:
+        Path to the saved PGN file
+    """
+    try:
+        import zstandard as zstd
+    except ImportError:
+        raise ImportError(
+            "zstandard package is required for streaming downloads. "
+            "Install it with: pip install zstandard"
+        )
+    
+    # Create output filename
+    output_filename = f"lichess_games_streamed_{max_games or 'all'}.pgn"
+    output_path = os.path.join(output_dir, output_filename)
+    
+    print(f"Streaming from URL and extracting games...")
+    print(f"Max games to extract: {max_games if max_games else 'All'}")
+    
+    # Stream download and decompress on-the-fly
+    response = requests.get(url, stream=True)
+    response.raise_for_status()
+    
+    dctx = zstd.ZstdDecompressor()
+    decompressor_reader = dctx.stream_reader(response.raw)
+    pgn_stream = io.TextIOWrapper(decompressor_reader, encoding='utf-8')
+    
+    game_count = 0
+    
+    with open(output_path, 'w', encoding='utf-8') as out_file:
+        with tqdm(desc="Streaming games", unit=" games") as pbar:
+            while True:
+                if max_games and game_count >= max_games:
+                    break
+                
+                # Read one game using chess.pgn (handles multi-line games properly)
+                game = chess.pgn.read_game(pgn_stream)
+                if game is None:
+                    break
+                
+                # Write the game to output file
+                print(game, file=out_file)
+                print(file=out_file)  # Empty line between games
+                
+                game_count += 1
+                pbar.update(1)
+                
+                if max_games and game_count >= max_games:
+                    break
+    
+    # Close the stream
+    try:
+        pgn_stream.close()
+    except:
+        pass
+    try:
+        decompressor_reader.close()
+    except:
+        pass
+    
+    file_size_mb = os.path.getsize(output_path) / (1024**2)
+    print(f"\nStreaming complete!")
+    print(f"  Games extracted: {game_count}")
+    print(f"  Output file: {output_path}")
+    print(f"  File size: {file_size_mb:.2f} MB")
+    
+    return output_path
 
 
 def _direct_download_only(url: str, compressed_path: str) -> str:
@@ -273,42 +377,47 @@ def extract_positions_from_pgn(pgn_path: str, max_games: Optional[int] = None,
     games_with_no_positions = 0
 
     try:
-        while True:
-            if max_games and game_count >= max_games:
-                break
+        with tqdm(total=max_games, desc="Extracting positions", unit=" games") as pbar:
+            while True:
+                if max_games and game_count >= max_games:
+                    break
 
-            game = chess.pgn.read_game(pgn_file)
-            if game is None:
-                break
+                game = chess.pgn.read_game(pgn_file)
+                if game is None:
+                    break
 
-            game_count += 1
-            games_processed += 1
+                game_count += 1
+                games_processed += 1
 
-            game_info = {
-                'white': game.headers.get('White', ''),
-                'black': game.headers.get('Black', ''),
-                'result': game.headers.get('Result', ''),
-                'elo_white': game.headers.get('WhiteElo', ''),
-                'elo_black': game.headers.get('BlackElo', ''),
-            }
+                game_info = {
+                    'white': game.headers.get('White', ''),
+                    'black': game.headers.get('Black', ''),
+                    'result': game.headers.get('Result', ''),
+                    'elo_white': game.headers.get('WhiteElo', ''),
+                    'elo_black': game.headers.get('BlackElo', ''),
+                }
 
-            board = game.board()
+                board = game.board()
 
-            # Collect all positions from this game
-            all_positions = []
-            for move in game.mainline_moves():
-                board.push(move)
-                all_positions.append(board.fen())
+                # Collect all positions from this game
+                all_positions = []
+                for move in game.mainline_moves():
+                    board.push(move)
+                    all_positions.append(board.fen())
 
-            # Randomly sample positions_per_game from all positions
-            num_to_sample = min(positions_per_game, len(all_positions))
-            if num_to_sample > 0:
-                sampled = random.sample(all_positions, num_to_sample)
-                for fen in sampled:
-                    total_positions_extracted += 1
-                    yield fen, game_info
-            else:
-                games_with_no_positions += 1
+                # Randomly sample positions_per_game from all positions
+                num_to_sample = min(positions_per_game, len(all_positions))
+                if num_to_sample > 0:
+                    sampled = random.sample(all_positions, num_to_sample)
+                    for fen in sampled:
+                        total_positions_extracted += 1
+                        yield fen, game_info
+                else:
+                    games_with_no_positions += 1
+                
+                # Update progress bar with positions count
+                pbar.set_postfix({'positions': total_positions_extracted})
+                pbar.update(1)
 
     finally:
         # Print summary
@@ -375,26 +484,26 @@ def evaluate_position_with_stockfish(fen: str, engine: chess.engine.SimpleEngine
 def process_positions_batch(positions_batch: list, engine_path: str, depth: int = 10) -> list:
     """
     Process a batch of positions with Stockfish
-    
+
     Args:
         positions_batch: List of (fen, game_info) tuples
         engine_path: Path to Stockfish executable
         depth: Search depth for evaluation
-    
+
     Returns:
         List of (fen, eval) tuples
     """
     results = []
-    
+
     try:
         with chess.engine.SimpleEngine.popen_uci(engine_path) as engine:
-            for fen, game_info in positions_batch:
+            for fen, game_info in tqdm(positions_batch, desc="Evaluating positions", leave=False):
                 eval_score = evaluate_position_with_stockfish(fen, engine, depth)
                 if eval_score is not None:
                     results.append((fen, eval_score))
     except Exception as e:
         print(f"Error in batch processing: {e}")
-    
+
     return results
 
 
@@ -532,22 +641,39 @@ def download_and_process_lichess_data(
         batches.append(batch)
     
     print(f"Processing {len(batches)} batches with {num_workers} workers...")
-    
+
     with ThreadPoolExecutor(max_workers=num_workers) as executor:
         futures = []
         for batch in batches:
             future = executor.submit(process_positions_batch, batch, stockfish_path, depth)
             futures.append(future)
-        
-        for future in as_completed(futures):
-            results = future.result()
-            evaluated_positions.extend(results)
-    
-    print(f"Evaluated {len(evaluated_positions)} positions")
+
+        with tqdm(total=len(futures), desc="Batch progress", unit="batch") as pbar:
+            for future in as_completed(futures):
+                results = future.result()
+                evaluated_positions.extend(results)
+                pbar.update(1)
+
+    print(f"\nEvaluated {len(evaluated_positions)} positions")
     
     print("\n" + "=" * 80)
     print("Saving results")
     print("=" * 80)
+    
+    # Extract year/month from filename if not already set
+    if year is None or month is None:
+        import re
+        filename = os.path.basename(pgn_path)
+        match = re.search(r'(\d{4})-(\d{2})', filename)
+        if match:
+            year = int(match.group(1))
+            month = int(match.group(2))
+        else:
+            # Fallback: use current date or generic name
+            from datetime import datetime
+            now = datetime.now()
+            year = year or now.year
+            month = month or now.month
     
     if output_format == 'csv':
         output_path = os.path.join(output_dir, f'lichess_evaluated_{year}-{month:02d}.csv')

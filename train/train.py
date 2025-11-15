@@ -344,19 +344,9 @@ def ensure_data_exists(config: TrainingConfig) -> bool:
         'output_format': config.download_output_format,
         'num_workers': config.download_num_workers,
         'batch_size': config.download_batch_size,
-        'min_elo': config.download_min_elo,
-        'max_elo': config.download_max_elo,
-        'start_date': config.download_start_date,
-        'end_date': config.download_end_date,
-        'time_control': config.download_time_control,
-        'min_moves': config.download_min_moves,
-        'max_moves': config.download_max_moves,
-        'result_filter': config.download_result_filter,
-        'min_ply': config.download_min_ply,
-        'max_ply': config.download_max_ply,
+        'download_mode': config.download_mode,
         'skip_filter': config.download_skip_filter,
         'skip_redownload': config.download_skip_redownload,
-        'subset_ratio': config.download_subset_ratio,
     }
     
     try:
