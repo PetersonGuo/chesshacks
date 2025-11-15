@@ -1,7 +1,7 @@
 """
-Download Lichess dataset and evaluate positions with Stockfish (Simplified Workflow)
+Download Lichess dataset and evaluate positions with Stockfish
 
-This script downloads chess games from the Lichess database, extracts positions,
+This module downloads chess games from the Lichess database, extracts positions,
 and evaluates them using Stockfish to create a training dataset for NNUE models.
 
 Simplified workflow:
@@ -10,33 +10,16 @@ Simplified workflow:
     3. Extracts 10 random positions from each game (no filtering)
     4. Evaluates all positions with Stockfish
     5. Outputs to JSONL format for training
-
-Requirements:
-    - Stockfish installed and available in PATH (or provide path with --stockfish-path)
-    - Python packages: requests, zstandard, python-chess, tqdm
-
-Example usage:
-    # Download and process with defaults (10k games, latest database)
-    python download_data.py
-
-    # Download from specific month/year
-    python download_data.py --year 2024 --month 10
-
-    # Use custom Stockfish path and higher depth
-    python download_data.py --stockfish-path /usr/local/bin/stockfish --depth 15
-
-    # Process more games with more workers
-    python download_data.py --max-games 50000 --num-workers 8
 """
 
 import os
 import json
-import argparse
 import io
 import random
 import requests
 from tqdm import tqdm
 from typing import Optional, Tuple, Dict, Any, Iterator
+from contextlib import contextmanager
 import chess
 import chess.pgn
 import chess.engine
@@ -240,9 +223,6 @@ def _stream_download_games(url: str, output_dir: str, max_games: Optional[int] =
     with open(output_path, 'w', encoding='utf-8') as out_file:
         with tqdm(desc="Streaming games", unit=" games") as pbar:
             while True:
-                if max_games and game_count >= max_games:
-                    break
-                
                 # Read one game using chess.pgn (handles multi-line games properly)
                 game = chess.pgn.read_game(pgn_stream)
                 if game is None:
@@ -311,7 +291,7 @@ def _direct_download_only(url: str, compressed_path: str) -> str:
 
 def extract_positions_from_pgn(pgn_path: str, max_games: Optional[int] = None,
                                 positions_per_game: Optional[int] = None,
-                                config: Optional[TrainingConfig] = None) -> Iterator[Tuple[str, Dict[str, str]]]:
+                                config: Optional[TrainingConfig] = None) -> Iterator[str]:
     """
     Extract positions from PGN file (simplified - no filtering)
 
@@ -322,7 +302,7 @@ def extract_positions_from_pgn(pgn_path: str, max_games: Optional[int] = None,
         config: TrainingConfig instance (optional, for defaults)
 
     Yields:
-        Tuple of (fen, game_info) for each position
+        FEN string for each position
     """
     config, params = _resolve_config_params(
         config,
@@ -335,40 +315,46 @@ def extract_positions_from_pgn(pgn_path: str, max_games: Optional[int] = None,
     print(f"Configuration:")
     print(f"  Positions per game: {positions_per_game}")
     print(f"  Max games: {max_games if max_games else 'All'}")
-    print(f"  No filtering - using all positions from games")
     print()
     
-    # Track file handles for proper cleanup
-    pgn_file = None
-    file_handle = None
-    decompressor_reader = None
-    
-    if pgn_path.endswith('.zst'):
-        try:
-            import zstandard as zstd
-        except ImportError:
-            raise ImportError(
-                "zstandard package is required for .zst files. "
-                "Install it with: pip install zstandard"
-            )
-        
-        print("Opening compressed file (.zst)...")
-        dctx = zstd.ZstdDecompressor()
-        file_handle = open(pgn_path, 'rb')
-        decompressor_reader = dctx.stream_reader(file_handle)
-        pgn_file = io.TextIOWrapper(decompressor_reader, encoding='utf-8')
-        print("Compressed file opened successfully")
-    else:
-        print("Opening PGN file...")
-        pgn_file = open(pgn_path, 'r', encoding='utf-8', errors='ignore')
-        print("PGN file opened successfully")
+    @contextmanager
+    def open_pgn_file(path):
+        """Context manager for opening PGN files (compressed or plain)"""
+        if path.endswith('.zst'):
+            try:
+                import zstandard as zstd
+            except ImportError:
+                raise ImportError(
+                    "zstandard package is required for .zst files. "
+                    "Install it with: pip install zstandard"
+                )
+            file_handle = open(path, 'rb')
+            try:
+                dctx = zstd.ZstdDecompressor()
+                reader = dctx.stream_reader(file_handle)
+                pgn_file = io.TextIOWrapper(reader, encoding='utf-8')
+                try:
+                    yield pgn_file
+                finally:
+                    try:
+                        pgn_file.close()
+                    except:
+                        pass
+                    try:
+                        reader.close()
+                    except:
+                        pass
+            finally:
+                file_handle.close()
+        else:
+            with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+                yield f
     
     game_count = 0
-    games_processed = 0
     total_positions_extracted = 0
     games_with_no_positions = 0
 
-    try:
+    with open_pgn_file(pgn_path) as pgn_file:
         with tqdm(total=max_games, desc="Extracting positions", unit=" games") as pbar:
             while True:
                 if max_games and game_count >= max_games:
@@ -379,16 +365,6 @@ def extract_positions_from_pgn(pgn_path: str, max_games: Optional[int] = None,
                     break
 
                 game_count += 1
-                games_processed += 1
-
-                game_info = {
-                    'white': game.headers.get('White', ''),
-                    'black': game.headers.get('Black', ''),
-                    'result': game.headers.get('Result', ''),
-                    'elo_white': game.headers.get('WhiteElo', ''),
-                    'elo_black': game.headers.get('BlackElo', ''),
-                }
-
                 board = game.board()
 
                 # Collect all positions from this game
@@ -403,7 +379,7 @@ def extract_positions_from_pgn(pgn_path: str, max_games: Optional[int] = None,
                     sampled = random.sample(all_positions, num_to_sample)
                     for fen in sampled:
                         total_positions_extracted += 1
-                        yield fen, game_info
+                        yield fen
                 else:
                     games_with_no_positions += 1
                 
@@ -411,35 +387,16 @@ def extract_positions_from_pgn(pgn_path: str, max_games: Optional[int] = None,
                 pbar.set_postfix({'positions': total_positions_extracted})
                 pbar.update(1)
 
-    finally:
-        # Print summary
-        print("=" * 80)
-        print("Position extraction summary:")
-        print(f"  Total games read: {game_count}")
-        print(f"  Games processed: {games_processed}")
-        print(f"  Games with no positions: {games_with_no_positions}")
-        print(f"  Total positions extracted: {total_positions_extracted}")
-        if games_processed > 0:
-            avg_positions = total_positions_extracted / games_processed
-            print(f"  Average positions per processed game: {avg_positions:.2f}")
-        print("=" * 80)
-        
-        # Close file handles in reverse order of opening
-        if pgn_file:
-            try:
-                pgn_file.close()
-            except:
-                pass
-        if decompressor_reader:
-            try:
-                decompressor_reader.close()
-            except:
-                pass
-        if file_handle:
-            try:
-                file_handle.close()
-            except:
-                pass
+    # Print summary
+    print("=" * 80)
+    print("Position extraction summary:")
+    print(f"  Total games read: {game_count}")
+    print(f"  Games with no positions: {games_with_no_positions}")
+    print(f"  Total positions extracted: {total_positions_extracted}")
+    if game_count > 0:
+        avg_positions = total_positions_extracted / game_count
+        print(f"  Average positions per game: {avg_positions:.2f}")
+    print("=" * 80)
 
 
 def evaluate_position_with_stockfish(fen: str, engine: chess.engine.SimpleEngine, 
@@ -478,7 +435,7 @@ def process_positions_batch(positions_batch: list, engine_path: str, depth: int 
     Process a batch of positions with Stockfish
 
     Args:
-        positions_batch: List of (fen, game_info) tuples
+        positions_batch: List of FEN strings
         engine_path: Path to Stockfish executable
         depth: Search depth for evaluation
 
@@ -488,7 +445,7 @@ def process_positions_batch(positions_batch: list, engine_path: str, depth: int 
     results = []
     try:
         with chess.engine.SimpleEngine.popen_uci(engine_path) as engine:
-            for fen, _ in positions_batch:
+            for fen in positions_batch:
                 eval_score = evaluate_position_with_stockfish(fen, engine, depth)
                 if eval_score is not None:
                     results.append((fen, eval_score))
@@ -583,18 +540,14 @@ def download_and_process_lichess_data(
     print("=" * 80)
 
     positions = []
-    position_count = 0
-
-    for fen, game_info in extract_positions_from_pgn(
+    for fen in extract_positions_from_pgn(
         pgn_path,
         max_games=max_games,
         positions_per_game=positions_per_game,
         config=config
     ):
-        positions.append((fen, game_info))
-        position_count += 1
-        
-        if max_positions and position_count >= max_positions:
+        positions.append(fen)
+        if max_positions and len(positions) >= max_positions:
             break
     
     print(f"Extracted {len(positions)} positions from {max_games or 'all'} games")
@@ -602,15 +555,6 @@ def download_and_process_lichess_data(
     print("\n" + "=" * 80)
     print("Evaluating positions with Stockfish")
     print("=" * 80)
-    
-    try:
-        with chess.engine.SimpleEngine.popen_uci(stockfish_path) as engine:
-            print(f"Stockfish found at: {stockfish_path}")
-    except Exception as e:
-        print(f"Error: Could not start Stockfish at {stockfish_path}")
-        print(f"Please install Stockfish and provide the correct path.")
-        print(f"Error: {e}")
-        return
     
     evaluated_positions = []
     batches = []
@@ -641,14 +585,11 @@ def download_and_process_lichess_data(
     # Extract year/month from filename if not already set
     if year is None or month is None:
         import re
-        filename = os.path.basename(pgn_path)
-        match = re.search(r'(\d{4})-(\d{2})', filename)
+        from datetime import datetime
+        match = re.search(r'(\d{4})-(\d{2})', os.path.basename(pgn_path))
         if match:
-            year = int(match.group(1))
-            month = int(match.group(2))
+            year, month = int(match.group(1)), int(match.group(2))
         else:
-            # Fallback: use current date or generic name
-            from datetime import datetime
             now = datetime.now()
             year = year or now.year
             month = month or now.month
@@ -666,61 +607,3 @@ def download_and_process_lichess_data(
     return output_path
 
 
-def main():
-    # Load config for defaults
-    config = get_config('default')
-    
-    parser = argparse.ArgumentParser(
-        description='Download Lichess dataset and evaluate positions with Stockfish'
-    )
-    
-    parser.add_argument('--output-dir', type=str, default=config.download_output_dir,
-                       help=f'Directory to save output files (default: {config.download_output_dir})')
-    parser.add_argument('--year', type=int, default=None,
-                       help='Year of database to download (default: auto-detect latest)')
-    parser.add_argument('--month', type=int, default=None,
-                       help='Month of database to download (1-12, default: auto-detect latest)')
-    parser.add_argument('--all-games', action='store_true',
-                       help='Download all games (not just rated)')
-    parser.add_argument('--stockfish-path', type=str, default=config.stockfish_path,
-                       help=f'Path to Stockfish executable (default: {config.stockfish_path})')
-    parser.add_argument('--depth', type=int, default=config.download_depth,
-                       help=f'Stockfish search depth (default: {config.download_depth})')
-    parser.add_argument('--max-games', type=int, default=config.download_max_games,
-                       help=f'Maximum games to download (default: {config.download_max_games})')
-    parser.add_argument('--positions-per-game', type=int, default=config.download_positions_per_game,
-                       help=f'Positions to sample per game (default: {config.download_positions_per_game})')
-    parser.add_argument('--max-positions', type=int, default=None,
-                       help='Maximum positions to evaluate (default: all)')
-    parser.add_argument('--num-workers', type=int, default=config.download_num_workers,
-                       help=f'Number of parallel workers (default: {config.download_num_workers})')
-    parser.add_argument('--batch-size', type=int, default=config.download_batch_size,
-                       help=f'Batch size for parallel processing (default: {config.download_batch_size})')
-    parser.add_argument('--download-mode', type=str, default='streaming',
-                       choices=['streaming', 'direct'],
-                       help='Download mode: streaming or direct (default: streaming)')
-    parser.add_argument('--skip-redownload', action='store_true', default=config.download_skip_redownload,
-                       help='Skip re-downloading if file already exists (default: True)')
-
-    args = parser.parse_args()
-
-    download_and_process_lichess_data(
-        output_dir=args.output_dir,
-        year=args.year,
-        month=args.month,
-        rated_only=not args.all_games,
-        stockfish_path=args.stockfish_path,
-        depth=args.depth,
-        max_games=args.max_games,
-        positions_per_game=args.positions_per_game,
-        max_positions=args.max_positions,
-        num_workers=args.num_workers,
-        batch_size=args.batch_size,
-        download_mode=args.download_mode,
-        skip_redownload=args.skip_redownload,
-        config=config
-    )
-
-
-if __name__ == '__main__':
-    main()
