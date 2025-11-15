@@ -4,6 +4,7 @@ Configuration for NNUE training
 
 import os
 import copy
+import json
 from dataclasses import dataclass
 from typing import Optional
 
@@ -156,6 +157,24 @@ LARGE_SCALE_CONFIG = TrainingConfig(
 )
 
 
+def load_download_config():
+    """
+    Load download configuration from download_config.json if it exists
+    
+    Returns:
+        dict with config values, or empty dict if file doesn't exist
+    """
+    config_path = os.path.join(os.path.dirname(__file__), 'download_config.json')
+    if os.path.exists(config_path):
+        try:
+            with open(config_path, 'r') as f:
+                return json.load(f)
+        except (json.JSONDecodeError, IOError) as e:
+            print(f"Warning: Could not load download_config.json: {e}")
+            return {}
+    return {}
+
+
 def get_config(config_name='default'):
     """
     Get a configuration by name
@@ -176,7 +195,17 @@ def get_config(config_name='default'):
     if config_name not in configs:
         raise ValueError(f"Unknown config: {config_name}. Choose from {list(configs.keys())}")
 
-    return copy.deepcopy(configs[config_name])
+    config = copy.deepcopy(configs[config_name])
+    
+    # Load values from download_config.json if it exists
+    download_config = load_download_config()
+    if download_config:
+        if 'max_games' in download_config:
+            config.download_max_games = download_config['max_games']
+        if 'max_games_searched' in download_config:
+            config.download_max_games_searched = download_config['max_games_searched']
+    
+    return config
 
 
 if __name__ == "__main__":
