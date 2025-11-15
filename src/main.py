@@ -49,4 +49,11 @@ def reset_func(ctx: GameContext):
 
 
 def main():
-    c_helpers.alpha_beta(0, 3, c_helpers.MIN, c_helpers.MAX, True)
+    def nnue_evaluate(fen: str) -> int:
+        # Placeholder: return a simple evaluation
+        return 0
+
+    # Example usage with FEN string and NNUE callback
+    starting_fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+    result = c_helpers.alpha_beta(starting_fen, 3, c_helpers.MIN, c_helpers.MAX, True, nnue_evaluate)
+    print(f"Alpha-beta result: {result}")

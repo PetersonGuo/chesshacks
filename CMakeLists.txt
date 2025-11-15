@@ -22,4 +22,5 @@ include_directories(${CMAKE_SOURCE_DIR}/src)
 nanobind_add_module(c_helpers
     src/bindings.cpp
     src/functions.cpp
+    src/chess_board.cpp
 )
