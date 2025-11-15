@@ -134,4 +134,75 @@ NB_MODULE(c_helpers, m) {
         "killers: Optional KillerMoves\n"
         "history: Optional HistoryTable\n"
         "counters: Optional CounterMoveTable");
+
+  // Opening Book
+  nb::class_<BookMove>(m, "BookMove")
+      .def_rw("uci_move", &BookMove::uci_move, "UCI move string")
+      .def_rw("weight", &BookMove::weight, "Move weight/frequency");
+
+  nb::class_<OpeningBook>(m, "OpeningBook")
+      .def(nb::init<>(), "Create a new opening book")
+      .def("load", &OpeningBook::load, nb::arg("book_path"),
+           "Load a Polyglot opening book file (.bin)")
+      .def("is_loaded", &OpeningBook::is_loaded, 
+           "Check if book is loaded")
+      .def("probe", &OpeningBook::probe, nb::arg("fen"),
+           "Probe book for position, returns list of BookMove")
+      .def("probe_best", &OpeningBook::probe_best, nb::arg("fen"),
+           "Get highest-weighted move for position")
+      .def("probe_weighted", &OpeningBook::probe_weighted, nb::arg("fen"),
+           "Get random weighted move for position")
+      .def("clear", &OpeningBook::clear, "Clear loaded book");
+
+  // Multi-PV Search
+  nb::class_<PVLine>(m, "PVLine")
+      .def_rw("uci_move", &PVLine::uci_move, "Best move in UCI format")
+      .def_rw("score", &PVLine::score, "Evaluation score")
+      .def_rw("depth", &PVLine::depth, "Search depth")
+      .def_rw("pv", &PVLine::pv, "Principal variation");
+
+  m.def("multi_pv_search", &multi_pv_search,
+        nb::arg("fen"), nb::arg("depth"), nb::arg("num_lines"),
+        nb::arg("evaluate"), nb::arg("tt") = nullptr,
+        nb::arg("num_threads") = 0, nb::arg("killers") = nullptr,
+        nb::arg("history") = nullptr, nb::arg("counters") = nullptr,
+        "Search for multiple principal variations.\n"
+        "Returns list of top N moves with scores.\n\n"
+        "fen: Position in FEN notation\n"
+        "depth: Search depth\n"
+        "num_lines: Number of lines to return\n"
+        "evaluate: Evaluation function\n"
+        "tt: Optional TranspositionTable\n"
+        "num_threads: Number of threads (0=auto)\n"
+        "killers: Optional KillerMoves\n"
+        "history: Optional HistoryTable\n"
+        "counters: Optional CounterMoveTable");
+
+  // Tablebase (placeholder)
+  nb::enum_<WDLScore>(m, "WDLScore")
+      .value("TB_LOSS", TB_LOSS)
+      .value("TB_BLESSED_LOSS", TB_BLESSED_LOSS)
+      .value("TB_DRAW", TB_DRAW)
+      .value("TB_CURSED_WIN", TB_CURSED_WIN)
+      .value("TB_WIN", TB_WIN)
+      .value("TB_FAILED", TB_FAILED);
+
+  nb::class_<TablebaseResult>(m, "TablebaseResult")
+      .def_rw("wdl", &TablebaseResult::wdl, "Win/Draw/Loss result")
+      .def_rw("dtz", &TablebaseResult::dtz, "Distance to zeroing move")
+      .def_rw("success", &TablebaseResult::success, "Probe successful");
+
+  nb::class_<Tablebase>(m, "Tablebase")
+      .def(nb::init<>(), "Create tablebase instance")
+      .def("init", &Tablebase::init, nb::arg("path"),
+           "Initialize tablebase with path to .rtbw files")
+      .def("is_initialized", &Tablebase::is_initialized,
+           "Check if tablebase is initialized")
+      .def("probe_wdl", &Tablebase::probe_wdl, nb::arg("fen"),
+           "Probe Win/Draw/Loss for position")
+      .def("probe_dtz", &Tablebase::probe_dtz, nb::arg("fen"),
+           "Probe Distance-To-Zero for position")
+      .def("max_pieces", &Tablebase::max_pieces,
+           "Maximum pieces supported");
 }
+

@@ -9,6 +9,8 @@
 #include <sstream>
 #include <regex>
 #include <cctype>
+#include <fstream>
+#include <cstdlib>
 
 // ============================================================================
 // CUDA AVAILABILITY CHECK
@@ -1627,3 +1629,331 @@ std::string pgn_to_fen(const std::string &pgn) {
   // Return final FEN
   return board.to_fen();
 }
+
+// ============================================================================
+// OPENING BOOK IMPLEMENTATION
+// ============================================================================
+
+// Polyglot Zobrist hash implementation
+uint64_t OpeningBook::polyglot_hash(const std::string &fen) {
+  // Polyglot uses specific Zobrist keys for hashing
+  // This is a simplified implementation - full Polyglot requires exact keys
+  
+  static const uint64_t piece_keys[13][64] = {/* Zobrist table would go here */};
+  static bool keys_initialized = false;
+  
+  // For now, use a simple hash based on position
+  // TODO: Implement full Polyglot Zobrist hashing with correct keys
+  uint64_t hash = 0;
+  
+  ChessBoard board;
+  board.from_fen(fen);
+  
+  // Simple hash: XOR piece positions
+  for (int sq = 0; sq < 64; sq++) {
+    Piece p = board.get_piece_at(sq);
+    if (p != EMPTY) {
+      // Use square and piece type for simple hash
+      hash ^= ((uint64_t)(p + 6) << (sq % 32)) | ((uint64_t)sq << 32);
+    }
+  }
+  
+  // Add turn to move
+  if (fen.find(" b ") != std::string::npos) {
+    hash ^= 0x1;
+  }
+  
+  return hash;
+}
+
+std::string OpeningBook::decode_move(uint16_t move) {
+  // Polyglot move format:
+  // bits 0-5: to square
+  // bits 6-11: from square  
+  // bits 12-14: promotion (0=none, 1=N, 2=B, 3=R, 4=Q)
+  
+  int to_sq = move & 0x3F;
+  int from_sq = (move >> 6) & 0x3F;
+  int promo = (move >> 12) & 0x7;
+  
+  // Convert to UCI
+  char from_file = 'a' + (from_sq % 8);
+  char from_rank = '1' + (from_sq / 8);
+  char to_file = 'a' + (to_sq % 8);
+  char to_rank = '1' + (to_sq / 8);
+  
+  std::string uci;
+  uci += from_file;
+  uci += from_rank;
+  uci += to_file;
+  uci += to_rank;
+  
+  // Add promotion
+  if (promo > 0) {
+    const char promo_chars[] = {' ', 'n', 'b', 'r', 'q'};
+    if (promo < 5) {
+      uci += promo_chars[promo];
+    }
+  }
+  
+  return uci;
+}
+
+bool OpeningBook::load(const std::string &book_path) {
+  std::ifstream file(book_path, std::ios::binary);
+  if (!file.is_open()) {
+    return false;
+  }
+  
+  entries.clear();
+  
+  while (file.good()) {
+    BookEntry entry;
+    char buffer[16];
+    
+    file.read(buffer, 16);
+    if (file.gcount() < 16) break;
+    
+    // Parse big-endian Polyglot format
+    entry.key = 0;
+    for (int i = 0; i < 8; i++) {
+      entry.key = (entry.key << 8) | (unsigned char)buffer[i];
+    }
+    
+    entry.move = ((unsigned char)buffer[8] << 8) | (unsigned char)buffer[9];
+    entry.weight = ((unsigned char)buffer[10] << 8) | (unsigned char)buffer[11];
+    entry.learn = ((unsigned char)buffer[12] << 24) | 
+                  ((unsigned char)buffer[13] << 16) |
+                  ((unsigned char)buffer[14] << 8) | 
+                  (unsigned char)buffer[15];
+    
+    entries.push_back(entry);
+  }
+  
+  file.close();
+  
+  // Sort by key for binary search
+  std::sort(entries.begin(), entries.end(), 
+            [](const BookEntry &a, const BookEntry &b) {
+              return a.key < b.key;
+            });
+  
+  loaded = !entries.empty();
+  return loaded;
+}
+
+std::vector<BookMove> OpeningBook::probe(const std::string &fen) {
+  std::vector<BookMove> moves;
+  
+  if (!loaded) return moves;
+  
+  uint64_t hash = polyglot_hash(fen);
+  
+  // Binary search for matching positions
+  auto lower = std::lower_bound(entries.begin(), entries.end(), hash,
+                                [](const BookEntry &e, uint64_t h) {
+                                  return e.key < h;
+                                });
+  
+  // Collect all moves for this position
+  while (lower != entries.end() && lower->key == hash) {
+    BookMove bm;
+    bm.uci_move = decode_move(lower->move);
+    bm.weight = lower->weight;
+    moves.push_back(bm);
+    ++lower;
+  }
+  
+  return moves;
+}
+
+std::string OpeningBook::probe_best(const std::string &fen) {
+  auto moves = probe(fen);
+  if (moves.empty()) return "";
+  
+  // Return highest weighted move
+  auto best = std::max_element(moves.begin(), moves.end(),
+                               [](const BookMove &a, const BookMove &b) {
+                                 return a.weight < b.weight;
+                               });
+  return best->uci_move;
+}
+
+std::string OpeningBook::probe_weighted(const std::string &fen) {
+  auto moves = probe(fen);
+  if (moves.empty()) return "";
+  
+  // Weighted random selection
+  int total_weight = 0;
+  for (const auto &m : moves) {
+    total_weight += m.weight;
+  }
+  
+  if (total_weight == 0) {
+    return moves[0].uci_move;
+  }
+  
+  int rand_val = rand() % total_weight;
+  int current = 0;
+  
+  for (const auto &m : moves) {
+    current += m.weight;
+    if (rand_val < current) {
+      return m.uci_move;
+    }
+  }
+  
+  return moves[0].uci_move;
+}
+
+void OpeningBook::clear() {
+  entries.clear();
+  loaded = false;
+}
+
+// ============================================================================
+// MULTI-PV SEARCH IMPLEMENTATION
+// ============================================================================
+
+std::vector<PVLine> 
+multi_pv_search(const std::string &fen, int depth, int num_lines,
+                const std::function<int(const std::string &)> &evaluate,
+                TranspositionTable *tt, int num_threads,
+                KillerMoves *killers, HistoryTable *history,
+                CounterMoveTable *counters) {
+  
+  std::vector<PVLine> pv_lines;
+  
+  // Create local instances if needed
+  TranspositionTable local_tt;
+  KillerMoves local_killers;
+  HistoryTable local_history;
+  CounterMoveTable local_counters;
+  
+  if (!tt) tt = &local_tt;
+  if (!killers) killers = &local_killers;
+  if (!history) history = &local_history;
+  if (!counters) counters = &local_counters;
+  
+  ChessBoard board(fen);
+  std::vector<Move> legal_moves = board.generate_legal_moves();
+  
+  if (legal_moves.empty()) {
+    return pv_lines; // No moves available
+  }
+  
+  // Determine if maximizing
+  bool maximizing = fen.find(" w ") != std::string::npos;
+  
+  // Score all moves
+  struct ScoredMove {
+    Move move;
+    std::string fen_after;
+    int score;
+  };
+  
+  std::vector<ScoredMove> scored_moves;
+  scored_moves.reserve(legal_moves.size());
+  
+  for (const Move &move : legal_moves) {
+    board.make_move(move);
+    std::string child_fen = board.to_fen();
+    
+    int score = alpha_beta_optimized(
+      child_fen, depth - 1, MIN, MAX, !maximizing,
+      evaluate, tt, 0, killers, history, counters
+    );
+    
+    board.unmake_move(move);
+    
+    ScoredMove sm{move, child_fen, score};
+    scored_moves.push_back(sm);
+  }
+  
+  // Sort moves by score
+  std::sort(scored_moves.begin(), scored_moves.end(),
+            [maximizing](const ScoredMove &a, const ScoredMove &b) {
+              if (maximizing) {
+                return a.score > b.score; // Best first
+              } else {
+                return a.score < b.score; // Worst (best for black) first
+              }
+            });
+  
+  // Return top N lines
+  int lines_to_return = std::min(num_lines, (int)scored_moves.size());
+  
+  for (int i = 0; i < lines_to_return; i++) {
+    PVLine line;
+    
+    // Convert move to UCI
+    const Move &m = scored_moves[i].move;
+    char from_file = 'a' + (m.from % 8);
+    char from_rank = '1' + (m.from / 8);
+    char to_file = 'a' + (m.to % 8);
+    char to_rank = '1' + (m.to / 8);
+    
+    line.uci_move = std::string() + from_file + from_rank + to_file + to_rank;
+    
+    // Add promotion
+    if (m.promotion != EMPTY) {
+      char promo = ' ';
+      int piece_type = m.promotion < 0 ? -m.promotion : m.promotion;
+      switch (piece_type) {
+        case 2: promo = 'n'; break;
+        case 3: promo = 'b'; break;
+        case 4: promo = 'r'; break;
+        case 5: promo = 'q'; break;
+      }
+      if (promo != ' ') line.uci_move += promo;
+    }
+    
+    line.score = scored_moves[i].score;
+    line.depth = depth;
+    line.pv = line.uci_move; // TODO: Extract full PV from TT
+    
+    pv_lines.push_back(line);
+  }
+  
+  return pv_lines;
+}
+
+// ============================================================================
+// TABLEBASE IMPLEMENTATION (Placeholder)
+// ============================================================================
+
+bool Tablebase::init(const std::string &path) {
+  // TODO: Integrate Fathom library or python-chess syzygy
+  // For now, this is a placeholder
+  tb_path = path;
+  initialized = false; // Not actually initialized
+  max_pieces_ = 0;
+  return false;
+}
+
+TablebaseResult Tablebase::probe_wdl(const std::string &fen) {
+  TablebaseResult result;
+  result.wdl = TB_FAILED;
+  result.dtz = 0;
+  result.success = false;
+  
+  // TODO: Implement actual tablebase probing
+  // This would require:
+  // 1. Parsing FEN to get piece configuration
+  // 2. Checking if position is in tablebase (piece count <= max)
+  // 3. Calling Syzygy/Fathom probe function
+  // 4. Converting result to WDLScore
+  
+  return result;
+}
+
+TablebaseResult Tablebase::probe_dtz(const std::string &fen) {
+  TablebaseResult result;
+  result.wdl = TB_FAILED;
+  result.dtz = 0;
+  result.success = false;
+  
+  // TODO: Implement DTZ probing
+  return result;
+}
+
