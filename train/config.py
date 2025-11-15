@@ -87,6 +87,9 @@ class TrainingConfig:
     download_min_moves: Optional[int] = None  # Minimum number of moves in game
     download_max_moves: Optional[int] = None  # Maximum number of moves in game
     download_result_filter: Optional[str] = None  # Result filter: '1-0', '0-1', '1/2-1/2', or None
+    download_skip_filter: bool = True  # Skip filtering entirely - use all games from downloaded database
+    download_skip_redownload: bool = True  # Skip re-downloading if file already exists
+    download_subset_ratio: Optional[float] = 0.05  # Read only a subset of downloaded games (e.g., 0.1 for 10%)
     
     resume_from: Optional[str] = None
 
