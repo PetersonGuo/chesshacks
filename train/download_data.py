@@ -591,6 +591,25 @@ def extract_positions_from_pgn(pgn_path: str, max_games: Optional[int] = None,
     max_ply = params['max_ply']
     subset_ratio = params.get('subset_ratio', None)
     
+    print(f"Reading from: {pgn_path}")
+    print(f"Configuration:")
+    print(f"  Positions per game: {positions_per_game}")
+    print(f"  Ply range: {min_ply} - {max_ply}")
+    if subset_ratio is not None:
+        print(f"  Subset ratio: {subset_ratio:.1%} (processing {subset_ratio*100:.1f}% of games)")
+        if max_games:
+            expected_processed = int(max_games * subset_ratio)
+            print(f"  Expected games to process: ~{expected_processed} (from {max_games} total games)")
+        else:
+            print(f"  Expected games to process: ~{subset_ratio:.1%} of all games in file")
+    else:
+        print(f"  Subset ratio: None (processing all games)")
+        if max_games:
+            print(f"  Expected games to process: {max_games}")
+        else:
+            print(f"  Expected games to process: All games in file")
+    print()
+    
     # Track file handles for proper cleanup
     pgn_file = None
     file_handle = None
@@ -605,14 +624,43 @@ def extract_positions_from_pgn(pgn_path: str, max_games: Optional[int] = None,
                 "Install it with: pip install zstandard"
             )
         
+        print("Opening compressed file (.zst)...")
         dctx = zstd.ZstdDecompressor()
         file_handle = open(pgn_path, 'rb')
         decompressor_reader = dctx.stream_reader(file_handle)
         pgn_file = io.TextIOWrapper(decompressor_reader, encoding='utf-8')
+        print("Compressed file opened successfully")
     else:
+        print("Opening PGN file...")
         pgn_file = open(pgn_path, 'r', encoding='utf-8', errors='ignore')
+        print("PGN file opened successfully")
     
     game_count = 0
+    games_skipped_subset = 0
+    games_skipped_filter = 0
+    games_processed = 0
+    total_positions_extracted = 0
+    games_with_no_valid_positions = 0
+    
+    # Calculate expected games to process for progress bar
+    if max_games:
+        if subset_ratio is not None:
+            expected_total = int(max_games * subset_ratio)
+        else:
+            expected_total = max_games
+    else:
+        expected_total = None
+    
+    # Initialize progress bar
+    desc_text = "Extracting positions"
+    if expected_total:
+        desc_text += f" (target: {expected_total} games)"
+    pbar = tqdm(
+        desc=desc_text,
+        unit=" games read",
+        dynamic_ncols=True,
+        total=max_games if max_games else None
+    )
     
     try:
         while True:
@@ -623,16 +671,33 @@ def extract_positions_from_pgn(pgn_path: str, max_games: Optional[int] = None,
             if game is None:
                 break
             
+            game_count += 1
+            pbar.update(1)
+            
             # Apply subset ratio - randomly skip games if ratio specified
             if subset_ratio is not None:
                 if random.random() > subset_ratio:
+                    games_skipped_subset += 1
+                    pbar.set_postfix({
+                        'read': game_count,
+                        'processed': games_processed,
+                        'positions': total_positions_extracted,
+                        'skipped_subset': games_skipped_subset
+                    })
                     continue
             
             if not should_include_game(game, min_elo, max_elo, start_date, end_date,
                                      time_control, min_moves, max_moves, result_filter):
+                games_skipped_filter += 1
+                pbar.set_postfix({
+                    'read': game_count,
+                    'processed': games_processed,
+                    'positions': total_positions_extracted,
+                    'skipped_filter': games_skipped_filter
+                })
                 continue
             
-            game_count += 1
+            games_processed += 1
             
             game_info = {
                 'white': game.headers.get('White', ''),
@@ -660,12 +725,38 @@ def extract_positions_from_pgn(pgn_path: str, max_games: Optional[int] = None,
             if num_to_sample > 0:
                 sampled = random.sample(valid_positions, num_to_sample)
                 for _, fen in sampled:
+                    total_positions_extracted += 1
                     yield fen, game_info
+            else:
+                games_with_no_valid_positions += 1
             
-            if game_count % 1000 == 0:
-                print(f"Processed {game_count} games...")
+            # Update progress bar with current stats
+            pbar.set_postfix({
+                'read': game_count,
+                'processed': games_processed,
+                'positions': total_positions_extracted,
+                'avg_pos/game': f'{total_positions_extracted/games_processed:.1f}' if games_processed > 0 else '0.0'
+            })
     
     finally:
+        # Close progress bar
+        pbar.close()
+        
+        # Print summary
+        print("=" * 80)
+        print("Position extraction summary:")
+        print(f"  Total games read: {game_count}")
+        if subset_ratio is not None:
+            print(f"  Games skipped (subset ratio): {games_skipped_subset}")
+        print(f"  Games skipped (filters): {games_skipped_filter}")
+        print(f"  Games processed: {games_processed}")
+        print(f"  Games with no valid positions: {games_with_no_valid_positions}")
+        print(f"  Total positions extracted: {total_positions_extracted}")
+        if games_processed > 0:
+            avg_positions = total_positions_extracted / games_processed
+            print(f"  Average positions per processed game: {avg_positions:.2f}")
+        print("=" * 80)
+        
         # Close file handles in reverse order of opening
         if pgn_file:
             try:
