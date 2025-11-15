@@ -55,5 +55,5 @@ def main():
 
     # Example usage with FEN string and NNUE callback
     starting_fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
-    result = c_helpers.alpha_beta(starting_fen, 3, c_helpers.MIN, c_helpers.MAX, True, nnue_evaluate)
+    result = c_helpers.alpha_beta(starting_fen, 10, c_helpers.MIN, c_helpers.MAX, True, nnue_evaluate)
     print(f"Alpha-beta result: {result}")
