@@ -76,6 +76,7 @@ class TrainingConfig:
     download_output_dir: str = 'data'  # Output directory for downloaded data
     download_min_ply: int = 10  # Minimum ply (half-move) to sample positions from
     download_max_ply: int = 100  # Maximum ply to sample positions from
+    download_mode: str = 'direct'  # Download mode: 'streaming' or 'direct'
     
     # Download filtering options (None = no filter)
     download_min_elo: Optional[int] = None  # Minimum ELO rating (either player must meet)
