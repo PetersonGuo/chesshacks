@@ -642,26 +642,6 @@ def extract_positions_from_pgn(pgn_path: str, max_games: Optional[int] = None,
     total_positions_extracted = 0
     games_with_no_valid_positions = 0
     
-    # Calculate expected games to process for progress bar
-    if max_games:
-        if subset_ratio is not None:
-            expected_total = int(max_games * subset_ratio)
-        else:
-            expected_total = max_games
-    else:
-        expected_total = None
-    
-    # Initialize progress bar
-    desc_text = "Extracting positions"
-    if expected_total:
-        desc_text += f" (target: {expected_total} games)"
-    pbar = tqdm(
-        desc=desc_text,
-        unit=" games read",
-        dynamic_ncols=True,
-        total=max_games if max_games else None
-    )
-    
     try:
         while True:
             if max_games and game_count >= max_games:
@@ -672,29 +652,16 @@ def extract_positions_from_pgn(pgn_path: str, max_games: Optional[int] = None,
                 break
             
             game_count += 1
-            pbar.update(1)
             
             # Apply subset ratio - randomly skip games if ratio specified
             if subset_ratio is not None:
                 if random.random() > subset_ratio:
                     games_skipped_subset += 1
-                    pbar.set_postfix({
-                        'read': game_count,
-                        'processed': games_processed,
-                        'positions': total_positions_extracted,
-                        'skipped_subset': games_skipped_subset
-                    })
                     continue
             
             if not should_include_game(game, min_elo, max_elo, start_date, end_date,
                                      time_control, min_moves, max_moves, result_filter):
                 games_skipped_filter += 1
-                pbar.set_postfix({
-                    'read': game_count,
-                    'processed': games_processed,
-                    'positions': total_positions_extracted,
-                    'skipped_filter': games_skipped_filter
-                })
                 continue
             
             games_processed += 1
@@ -729,19 +696,8 @@ def extract_positions_from_pgn(pgn_path: str, max_games: Optional[int] = None,
                     yield fen, game_info
             else:
                 games_with_no_valid_positions += 1
-            
-            # Update progress bar with current stats
-            pbar.set_postfix({
-                'read': game_count,
-                'processed': games_processed,
-                'positions': total_positions_extracted,
-                'avg_pos/game': f'{total_positions_extracted/games_processed:.1f}' if games_processed > 0 else '0.0'
-            })
     
     finally:
-        # Close progress bar
-        pbar.close()
-        
         # Print summary
         print("=" * 80)
         print("Position extraction summary:")
@@ -999,7 +955,7 @@ def download_and_process_lichess_data(
             future = executor.submit(process_positions_batch, batch, stockfish_path, depth)
             futures.append(future)
         
-        for future in tqdm(as_completed(futures), total=len(futures), desc="Evaluating"):
+        for future in as_completed(futures):
             results = future.result()
             evaluated_positions.extend(results)
     
