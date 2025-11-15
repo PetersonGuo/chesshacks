@@ -833,7 +833,7 @@ def download_and_process_lichess_data(
         rated_only: Download rated games only (defaults to config.download_rated_only or True)
         stockfish_path: Path to Stockfish executable (defaults to config.stockfish_path or 'stockfish')
         depth: Stockfish search depth (defaults to config.download_depth or 10)
-        max_games: Maximum games to process (defaults to config.download_max_games or 10000)
+        max_games: Maximum games to process (defaults to config.download_max_games or 100000)
         positions_per_game: Positions to sample per game (defaults to config.download_positions_per_game or 10)
         max_positions: Maximum positions to evaluate (None = all)
         output_format: Output format ('csv', 'json', or 'jsonl') (defaults to config.download_output_format or 'jsonl')
@@ -910,7 +910,7 @@ def download_and_process_lichess_data(
     
     for fen, game_info in extract_positions_from_pgn(
         pgn_path, 
-        max_games=None,
+        max_games=max_games,
         positions_per_game=positions_per_game,
         min_ply=min_ply,
         max_ply=max_ply,
