@@ -6,3 +6,5 @@ venv
 devtools
 build
 .claude
+train/data
+train/checkpoints

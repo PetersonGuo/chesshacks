@@ -68,8 +68,10 @@ USE_CUDA = has_cuda()
 SEARCH_DEPTH = 4  # Adjust based on time constraints
 NUM_THREADS = 0  # 0 = auto-detect CPU cores
 
-# Create persistent transposition table (reused across moves)
+# Create persistent C++ resources (reused across moves)
 transposition_table = c_helpers.TranspositionTable()
+killer_moves = c_helpers.KillerMoves()
+history_table = c_helpers.HistoryTable()
 
 print(f"Chess Engine initialized:")
 print(f"  - CUDA available: {USE_CUDA}")
@@ -110,10 +112,12 @@ def test_func(ctx: GameContext):
 @chess_manager.reset
 def reset_func(ctx: GameContext):
     # This gets called when a new game begins
-    # Clear transposition table for fresh start
-    global transposition_table
+    # Clear C++ resources for fresh start
+    global transposition_table, killer_moves, history_table
     transposition_table.clear()
-    print(f"New game started - TT cleared")
+    killer_moves.clear()
+    history_table.clear()
+    print(f"New game started - C++ resources cleared")
 
 
 def nnue_evaluate(fen: str) -> int:
@@ -133,36 +137,142 @@ def nnue_evaluate(fen: str) -> int:
     return score
 
 
-def search_position(fen: str, depth: int = SEARCH_DEPTH) -> int:
+def alpha_beta_basic(fen: str, depth: int, alpha: int = None, beta: int = None, 
+                     maximizing_player: bool = None, evaluate=None):
+    """
+    Call C++ alpha_beta_basic function - bare bones alpha-beta with no optimizations
+    
+    Args:
+        fen: FEN string of the position
+        depth: Search depth
+        alpha: Alpha value (defaults to MIN)
+        beta: Beta value (defaults to MAX)
+        maximizing_player: True if maximizing player (defaults to True if FEN indicates white)
+        evaluate: Evaluation function (defaults to nnue_evaluate)
+    
+    Returns:
+        Evaluation score
+    """
+    if alpha is None:
+        alpha = c_helpers.MIN
+    if beta is None:
+        beta = c_helpers.MAX
+    if maximizing_player is None:
+        # Determine from FEN (second part should be 'w' or 'b')
+        parts = fen.split()
+        maximizing_player = len(parts) > 1 and parts[1] == 'w'
+    if evaluate is None:
+        evaluate = nnue_evaluate
+    
+    return c_helpers.alpha_beta_basic(fen, depth, alpha, beta, maximizing_player, evaluate)
+
+
+def alpha_beta_optimized(fen: str, depth: int, alpha: int = None, beta: int = None,
+                         maximizing_player: bool = None, evaluate=None,
+                         tt=None, num_threads: int = 0, killers=None, history=None):
+    """
+    Call C++ alpha_beta_optimized function - full optimizations (TT, move ordering, etc.)
+    
+    Args:
+        fen: FEN string of the position
+        depth: Search depth
+        alpha: Alpha value (defaults to MIN)
+        beta: Beta value (defaults to MAX)
+        maximizing_player: True if maximizing player (defaults to True if FEN indicates white)
+        evaluate: Evaluation function (defaults to nnue_evaluate)
+        tt: TranspositionTable instance (optional, creates new one if None)
+        num_threads: Number of threads (0 = auto, 1 = sequential)
+        killers: KillerMoves instance (optional)
+        history: HistoryTable instance (optional)
+    
+    Returns:
+        Evaluation score
+    """
+    if alpha is None:
+        alpha = c_helpers.MIN
+    if beta is None:
+        beta = c_helpers.MAX
+    if maximizing_player is None:
+        # Determine from FEN
+        parts = fen.split()
+        maximizing_player = len(parts) > 1 and parts[1] == 'w'
+    if evaluate is None:
+        evaluate = nnue_evaluate
+    
+    return c_helpers.alpha_beta_optimized(
+        fen, depth, alpha, beta, maximizing_player, evaluate,
+        tt, num_threads, killers, history
+    )
+
+
+def alpha_beta_cuda(fen: str, depth: int, alpha: int = None, beta: int = None,
+                    maximizing_player: bool = None, evaluate=None,
+                    tt=None, killers=None, history=None):
+    """
+    Call C++ alpha_beta_cuda function - CUDA-accelerated search (falls back to optimized)
+    
+    Args:
+        fen: FEN string of the position
+        depth: Search depth
+        alpha: Alpha value (defaults to MIN)
+        beta: Beta value (defaults to MAX)
+        maximizing_player: True if maximizing player (defaults to True if FEN indicates white)
+        evaluate: Evaluation function (defaults to nnue_evaluate)
+        tt: TranspositionTable instance (optional)
+        killers: KillerMoves instance (optional)
+        history: HistoryTable instance (optional)
+    
+    Returns:
+        Evaluation score
+    """
+    if alpha is None:
+        alpha = c_helpers.MIN
+    if beta is None:
+        beta = c_helpers.MAX
+    if maximizing_player is None:
+        # Determine from FEN
+        parts = fen.split()
+        maximizing_player = len(parts) > 1 and parts[1] == 'w'
+    if evaluate is None:
+        evaluate = nnue_evaluate
+    
+    return c_helpers.alpha_beta_cuda(
+        fen, depth, alpha, beta, maximizing_player, evaluate,
+        tt, killers, history
+    )
+
+
+def search_position(fen: str, depth: int = SEARCH_DEPTH, tt=None, killers=None, history=None) -> int:
     """
     Search a position using the best available engine
     Returns the evaluation score
+    
+    Args:
+        fen: FEN string of the position
+        depth: Search depth
+        tt: TranspositionTable instance (uses global if None)
+        killers: KillerMoves instance (uses global if None)
+        history: HistoryTable instance (uses global if None)
+    
+    Returns:
+        Evaluation score
     """
-    global transposition_table
+    global transposition_table, killer_moves, history_table
+    
+    if tt is None:
+        tt = transposition_table
+    if killers is None:
+        killers = killer_moves
+    if history is None:
+        history = history_table
     
     if USE_CUDA:
         # Use CUDA-accelerated search if available
-        return c_helpers.alpha_beta_cuda(
-            fen, 
-            depth, 
-            c_helpers.MIN, 
-            c_helpers.MAX, 
-            True,  # Assuming white to move, adjust based on FEN
-            nnue_evaluate,
-            transposition_table
-        )
+        return alpha_beta_cuda(fen, depth, evaluate=nnue_evaluate, tt=tt, killers=killers, history=history)
     else:
         # Use optimized CPU search with all features
-        return c_helpers.alpha_beta_optimized(
-            fen,
-            depth,
-            c_helpers.MIN,
-            c_helpers.MAX,
-            True,  # Assuming white to move, adjust based on FEN
-            nnue_evaluate,
-            transposition_table,
-            NUM_THREADS
-        )
+        return alpha_beta_optimized(fen, depth, evaluate=nnue_evaluate, tt=tt, 
+                                   num_threads=NUM_THREADS, killers=killers, history=history)
 
 
 def main():

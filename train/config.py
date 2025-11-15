@@ -5,6 +5,7 @@ Configuration for NNUE training
 import os
 import copy
 from dataclasses import dataclass
+from typing import Optional
 
 
 @dataclass
@@ -12,8 +13,8 @@ class TrainingConfig:
     """Training hyperparameters and configuration"""
 
     # Data paths
-    train_data_path: str = 'data/train.csv'
-    val_data_path: str = 'data/val.csv'
+    train_data_path: str = 'data/train.jsonl'
+    val_data_path: str = 'data/val.jsonl'
 
     # Training parameters
     batch_size: int = 256
@@ -28,13 +29,14 @@ class TrainingConfig:
 
     # Data loading
     num_workers: int = 4
-    max_train_positions: int = None  # None = load all
-    max_val_positions: int = None
+    max_train_positions: Optional[int] = None  # None = load all
+    max_val_positions: Optional[int] = None
+    train_val_split_ratio: float = 0.9  # Ratio of data to use for training (rest for validation)
 
     # Checkpointing
     checkpoint_dir: str = 'checkpoints'
-    save_every_n_epochs: int = 5
-    save_best_only: bool = True
+    save_every_n_epochs: int = 10
+    save_best_only: bool = False
 
     # Validation
     validate_every_n_epochs: int = 1
@@ -44,7 +46,7 @@ class TrainingConfig:
 
     # Optimization
     optimizer: str = 'adam'  # 'adam' or 'sgd'
-    scheduler: str = None  # 'step', 'cosine', or None
+    scheduler: Optional[str] = None  # 'step', 'cosine', or None
     scheduler_step_size: int = 30  # for StepLR
     scheduler_gamma: float = 0.1  # for StepLR
 
@@ -57,6 +59,44 @@ class TrainingConfig:
 
     # Random seed
     seed: int = 42
+
+    # Data download
+    auto_download: bool = True
+    stockfish_path: str = 'stockfish'
+    download_year: int = 2025
+    download_month: int = 10
+    download_max_games: Optional[int] = None  # Maximum matching games to save (None = unlimited)
+    download_max_games_searched: Optional[int] = None  # Maximum total games to search (None = unlimited)
+    download_depth: int = 10
+    download_positions_per_game: int = 10
+    download_num_workers: int = 4
+    download_batch_size: int = 100
+    download_output_format: str = 'jsonl'
+    download_rated_only: bool = True  # Download rated games only
+    download_output_dir: str = 'data'  # Output directory for downloaded data
+    download_min_ply: int = 10  # Minimum ply (half-move) to sample positions from
+    download_max_ply: int = 100  # Maximum ply to sample positions from
+    
+    # Download filtering options (None = no filter)
+    download_min_elo: Optional[int] = None  # Minimum ELO rating (either player must meet)
+    download_max_elo: Optional[int] = None  # Maximum ELO rating (both players must be below)
+    download_start_date: Optional[str] = None  # Start date filter (YYYY-MM-DD format)
+    download_end_date: Optional[str] = None  # End date filter (YYYY-MM-DD format)
+    download_time_control: Optional[str] = None  # Time control filter (e.g., "180+2", "600+0")
+    download_min_moves: Optional[int] = None  # Minimum number of moves in game
+    download_max_moves: Optional[int] = None  # Maximum number of moves in game
+    download_result_filter: Optional[str] = None  # Result filter: '1-0', '0-1', '1/2-1/2', or None
+    
+    resume_from: Optional[str] = None
+
+    # Hugging Face upload configuration
+    hf_repo_id: str = 'jleezhang/chesshacks_model'
+    hf_auto_upload: bool = True  # Automatically upload checkpoints and final model
+    hf_upload_all_checkpoints: bool = False  # Only upload current checkpoint, not all previous ones
+    hf_checkpoints_dir: Optional[str] = None
+    hf_model_name: Optional[str] = None
+    hf_model_description: Optional[str] = None
+    hf_private: bool = False
 
     def __post_init__(self):
         """Validate and create necessary directories"""

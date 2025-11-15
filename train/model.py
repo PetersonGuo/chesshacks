@@ -184,17 +184,22 @@ class NNUEModel(nn.Module):
             white_features[0, white_idx] = 1.0
             black_features[0, black_idx] = 1.0
 
+            if board.turn == chess.BLACK:
+                white_features, black_features = black_features, white_features
+                flip_sign = -1
+            else:
+                flip_sign = 1
+
             # Forward pass
             score = self.forward(white_features, black_features)
 
-            # Flip score if black to move
-            if board.turn == chess.BLACK:
+            if flip_sign == -1:
                 score = -score
 
             return score.item()
 
 
-def count_parameters(model):
+def count_parameters(model: torch.nn.Module) -> int:
     """Count trainable parameters in the model"""
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 

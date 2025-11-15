@@ -6,10 +6,12 @@ Supports loading chess positions with evaluations from various formats
 import os
 import json
 import csv
+from typing import Optional, Tuple
 import torch
 from torch.utils.data import Dataset, DataLoader
 import chess
-from model import HalfKP
+from .model import HalfKP
+from .config import TrainingConfig
 
 
 class ChessPositionDataset(Dataset):
@@ -32,7 +34,7 @@ class ChessPositionDataset(Dataset):
         {"fen": "...", "eval": -0.5}
     """
 
-    def __init__(self, data_path, max_positions=None):
+    def __init__(self, data_path: str, max_positions: Optional[int] = None):
         """
         Initialize dataset
 
@@ -96,7 +98,7 @@ class ChessPositionDataset(Dataset):
     def __len__(self):
         return len(self.positions)
 
-    def __getitem__(self, idx):
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Get a training sample
 
@@ -119,13 +121,18 @@ class ChessPositionDataset(Dataset):
         white_features[white_idx] = 1.0
         black_features[black_idx] = 1.0
 
+        # If it's black to move, swap feature perspectives and flip the evaluation
+        if board.turn == chess.BLACK:
+            white_features, black_features = black_features, white_features
+            eval_score = -eval_score
+
         # Convert evaluation to tensor
         eval_tensor = torch.tensor([eval_score], dtype=torch.float32)
 
         return white_features, black_features, eval_tensor
 
 
-def collate_fn(batch):
+def collate_fn(batch: list) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     Custom collate function for batching
 
@@ -142,8 +149,10 @@ def collate_fn(batch):
     return white_features, black_features, evaluations
 
 
-def create_dataloaders(train_path, val_path=None, batch_size=256, num_workers=4,
-                       max_train_positions=None, max_val_positions=None):
+def create_dataloaders(train_path: str, val_path: Optional[str] = None, 
+                       batch_size: int = 256, num_workers: int = 4,
+                       max_train_positions: Optional[int] = None, 
+                       max_val_positions: Optional[int] = None) -> Tuple[DataLoader, Optional[DataLoader]]:
     """
     Create training and validation dataloaders
 
@@ -185,28 +194,38 @@ def create_dataloaders(train_path, val_path=None, batch_size=256, num_workers=4,
     return train_loader, val_loader
 
 
-def split_dataset(data_path, train_ratio=0.9, output_dir='data'):
+def split_dataset(data_path: str, train_ratio: Optional[float] = None, 
+                  output_dir: Optional[str] = None, 
+                  config: Optional[TrainingConfig] = None) -> Tuple[str, str]:
     """
     Split a dataset into train and validation sets
 
     Args:
         data_path: Path to original data file
-        train_ratio: Ratio of data to use for training (default 0.9)
-        output_dir: Directory to save split files
+        train_ratio: Ratio of data to use for training (defaults to config.train_val_split_ratio or 0.9)
+        output_dir: Directory to save split files (defaults to config.download_output_dir or 'data')
+        config: TrainingConfig instance (optional, for defaults)
 
     Returns:
         Tuple of (train_path, val_path)
     """
-    import random
+    import numpy as np
+
+    # Use config defaults if not provided
+    if train_ratio is None:
+        train_ratio = config.train_val_split_ratio if config else 0.9
+    if output_dir is None:
+        output_dir = config.download_output_dir if config else 'data'
 
     os.makedirs(output_dir, exist_ok=True)
 
     # Load all positions
     dataset = ChessPositionDataset(data_path)
 
-    # Create indices and shuffle
-    indices = list(range(len(dataset)))
-    random.shuffle(indices)
+    # Create indices and shuffle (using numpy for reproducibility with set_seed)
+    indices = np.arange(len(dataset))
+    np.random.shuffle(indices)
+    indices = indices.tolist()
 
     # Split
     split_idx = int(len(indices) * train_ratio)
@@ -264,45 +283,3 @@ def split_dataset(data_path, train_ratio=0.9, output_dir='data'):
     print(f"  Val:   {len(val_indices)} positions -> {val_path}")
 
     return train_path, val_path
-
-
-if __name__ == "__main__":
-    # Test dataset loading
-    print("Testing dataset loader...")
-
-    # Create a small test dataset
-    test_data = [
-        {"fen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", "eval": 0.15},
-        {"fen": "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1", "eval": 0.3},
-        {"fen": "rnbqkb1r/pppppppp/5n2/8/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 1 2", "eval": 0.25},
-    ]
-
-    # Save test data
-    with open('test_data.jsonl', 'w') as f:
-        for item in test_data:
-            json.dump(item, f)
-            f.write('\n')
-
-    # Load dataset
-    dataset = ChessPositionDataset('test_data.jsonl')
-    print(f"\nDataset size: {len(dataset)}")
-
-    # Test getting an item
-    white_features, black_features, eval_score = dataset[0]
-    print(f"Sample 0:")
-    print(f"  White features shape: {white_features.shape}")
-    print(f"  Black features shape: {black_features.shape}")
-    print(f"  Evaluation: {eval_score.item()}")
-    print(f"  Active white features: {white_features.sum().item()}")
-
-    # Test dataloader
-    train_loader, _ = create_dataloaders('test_data.jsonl', batch_size=2, num_workers=0)
-    print(f"\nDataLoader batches: {len(train_loader)}")
-
-    for white_batch, black_batch, eval_batch in train_loader:
-        print(f"Batch shapes: white={white_batch.shape}, black={black_batch.shape}, eval={eval_batch.shape}")
-        break
-
-    # Clean up
-    os.remove('test_data.jsonl')
-    print("\nDataset loader test complete!")
