@@ -13,8 +13,8 @@ class TrainingConfig:
     """Training hyperparameters and configuration"""
 
     # Data paths
-    train_data_path: str = 'data/train.csv'
-    val_data_path: str = 'data/val.csv'
+    train_data_path: str = 'data/train.jsonl'
+    val_data_path: str = 'data/val.jsonl'
 
     # Training parameters
     batch_size: int = 256
@@ -46,7 +46,7 @@ class TrainingConfig:
 
     # Optimization
     optimizer: str = 'adam'  # 'adam' or 'sgd'
-    scheduler: str = None  # 'step', 'cosine', or None
+    scheduler: Optional[str] = None  # 'step', 'cosine', or None
     scheduler_step_size: int = 30  # for StepLR
     scheduler_gamma: float = 0.1  # for StepLR
 
