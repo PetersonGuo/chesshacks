@@ -4,9 +4,14 @@
 #include <cmath>
 #include <thread>
 #include <vector>
+#include <memory>
+#include <iostream>
 
 const int MIN = INT_MIN;
 const int MAX = INT_MAX;
+
+// Global NNUE evaluator instance
+std::unique_ptr<NNUEEvaluator> g_nnue_evaluator = nullptr;
 
 // ============================================================================
 // PIECE-SQUARE TABLES
@@ -313,4 +318,63 @@ void order_moves(ChessBoard &board, std::vector<Move> &moves,
   for (const auto &pair : scored_moves) {
     moves.push_back(pair.first);
   }
+}
+
+// ============================================================================
+// NNUE EVALUATION
+// ============================================================================
+
+bool init_nnue(const std::string& model_path) {
+  try {
+    g_nnue_evaluator = std::make_unique<NNUEEvaluator>();
+    bool success = g_nnue_evaluator->load_model(model_path);
+
+    if (!success) {
+      g_nnue_evaluator.reset();
+      return false;
+    }
+
+    std::cout << "NNUE evaluator initialized successfully" << std::endl;
+    return true;
+  } catch (const std::exception& e) {
+    std::cerr << "Error initializing NNUE: " << e.what() << std::endl;
+    g_nnue_evaluator.reset();
+    return false;
+  }
+}
+
+bool is_nnue_loaded() {
+  return g_nnue_evaluator != nullptr && g_nnue_evaluator->is_loaded();
+}
+
+int evaluate_nnue(const std::string& fen) {
+  if (!is_nnue_loaded()) {
+    std::cerr << "Warning: NNUE not loaded, falling back to PST evaluation" << std::endl;
+    return evaluate_with_pst(fen);
+  }
+
+  return g_nnue_evaluator->evaluate(fen);
+}
+
+int evaluate_nnue(const ChessBoard& board) {
+  if (!is_nnue_loaded()) {
+    std::cerr << "Warning: NNUE not loaded, falling back to PST evaluation" << std::endl;
+    return evaluate_with_pst(board.to_fen());
+  }
+
+  return g_nnue_evaluator->evaluate(board);
+}
+
+int evaluate(const std::string& fen) {
+  if (is_nnue_loaded()) {
+    return evaluate_nnue(fen);
+  }
+  return evaluate_with_pst(fen);
+}
+
+int evaluate(const ChessBoard& board) {
+  if (is_nnue_loaded()) {
+    return evaluate_nnue(board);
+  }
+  return evaluate_with_pst(board.to_fen());
 }

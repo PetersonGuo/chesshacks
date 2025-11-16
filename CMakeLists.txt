@@ -64,6 +64,7 @@ set(SOURCE_FILES
     src/move_ordering.cpp
     src/transposition_table.cpp
     src/evaluation.cpp
+    src/nnue_evaluator.cpp
     src/opening_book.cpp
     src/search_and_utils.cpp
 )

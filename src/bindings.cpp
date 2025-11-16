@@ -109,6 +109,33 @@ NB_MODULE(c_helpers, m) {
         "num_threads: Number of threads (0 = auto-detect all available cores)\n"
         "Returns: List of evaluation scores");
 
+  // NNUE evaluation functions
+  m.def("init_nnue", &init_nnue, nb::arg("model_path"),
+        "Initialize NNUE evaluator with a trained model.\n"
+        "Load NNUE model from binary file (.bin).\n\n"
+        "model_path: Path to binary NNUE model file\n"
+        "Returns: True if loaded successfully, False otherwise");
+
+  m.def("is_nnue_loaded", &is_nnue_loaded,
+        "Check if NNUE model is loaded and ready for evaluation.\n"
+        "Returns: True if NNUE is loaded, False otherwise");
+
+  m.def("evaluate_nnue",
+        nb::overload_cast<const std::string&>(&evaluate_nnue),
+        nb::arg("fen"),
+        "Evaluate position using NNUE model.\n"
+        "Falls back to PST evaluation if NNUE not loaded.\n\n"
+        "fen: Position in FEN notation\n"
+        "Returns: Evaluation score in centipawns");
+
+  m.def("evaluate",
+        nb::overload_cast<const std::string&>(&evaluate),
+        nb::arg("fen"),
+        "Evaluate position using best available method.\n"
+        "Uses NNUE if loaded, otherwise PST evaluation.\n\n"
+        "fen: Position in FEN notation\n"
+        "Returns: Evaluation score in centipawns");
+
   // CUDA availability check
   m.def("is_cuda_available", &is_cuda_available,
         "Check if CUDA is available for GPU acceleration.\n"

@@ -4,8 +4,10 @@
 #include "chess_board.h"
 #include "move_ordering.h"
 #include "transposition_table.h"
+#include "nnue_evaluator.h"
 #include <string>
 #include <vector>
+#include <memory>
 
 // Piece-Square Tables for positional evaluation
 namespace PieceSquareTables {
@@ -43,5 +45,28 @@ void order_moves(ChessBoard &board, std::vector<Move> &moves,
 // Batch evaluate multiple positions in parallel
 std::vector<int> batch_evaluate_mt(const std::vector<std::string> &fens,
                                     int num_threads = 0);
+
+// ============================================================================
+// NNUE EVALUATION
+// ============================================================================
+
+// Global NNUE evaluator instance
+extern std::unique_ptr<NNUEEvaluator> g_nnue_evaluator;
+
+// Initialize NNUE evaluator with model file
+// Returns true if loaded successfully, false otherwise
+bool init_nnue(const std::string& model_path);
+
+// Check if NNUE is loaded and ready
+bool is_nnue_loaded();
+
+// Evaluate position using NNUE (if loaded)
+// Falls back to PST evaluation if NNUE is not loaded
+int evaluate_nnue(const std::string& fen);
+int evaluate_nnue(const ChessBoard& board);
+
+// Main evaluation function that uses NNUE if available, otherwise PST
+int evaluate(const std::string& fen);
+int evaluate(const ChessBoard& board);
 
 #endif // EVALUATION_H
