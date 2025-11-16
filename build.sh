@@ -103,6 +103,8 @@ ensure_unzip_tool() {
 }
 
 ensure_tool_via_pip "cmake" "cmake"
+ensure_tool_via_pip "ninja" "ninja"
+ensure_unzip_tool
 ensure_clang_toolchain
 
 if [[ ! -d "$SCRIPT_DIR/third_party/libtorch" ]]; then
