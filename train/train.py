@@ -533,6 +533,8 @@ def train(config: TrainingConfig) -> Tuple[torch.nn.Module, Dict[str, list]]:
 
     print(f"Model parameters: {count_parameters(model):,}")
 
+    torch.compile(model)
+
     # Create optimizer
     optimizer = get_optimizer(model, config)
     scheduler = get_scheduler(optimizer, config)
