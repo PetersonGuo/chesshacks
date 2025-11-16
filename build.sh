@@ -24,16 +24,19 @@ echo ""
 
 cd "$SCRIPT_DIR"
 
-echo "Checking Python dependencies..."
-if ! python3 -c "import nanobind" &>/dev/null; then
-    echo "nanobind not found - installing dependencies..."
-    if ! pip install -q nanobind; then
-        echo "ERROR: Failed to install nanobind"
-        echo "Please run: pip install nanobind"
-        exit 1
-    fi
-    echo "✓ nanobind installed"
+PYTHON_BIN=$(command -v python3)
+PYTHON_ROOT=$(python3 -c "import sys, pathlib; print(pathlib.Path(sys.executable).parent.parent)")
+PYTHON_INCLUDE=$(python3 -c "import sysconfig; print(sysconfig.get_path('include'))")
+PYTHON_LIBRARY=$(python3 -c "import sysconfig, pathlib; libdir = pathlib.Path(sysconfig.get_config_var('LIBDIR')); libname = 'libpython' + sysconfig.get_config_var('LDVERSION') + '.so'; print(libdir / libname)")
+echo "Using Python interpreter: $PYTHON_BIN"
+echo ""
+
+echo "Installing Python dependencies from requirements.txt..."
+if ! python3 -m pip install -r "$SCRIPT_DIR/requirements.txt"; then
+    echo "ERROR: Failed to install requirements"
+    exit 1
 fi
+echo "✓ Requirements installed"
 echo ""
 
 if [[ "${1:-}" == "clean" ]]; then
@@ -47,7 +50,18 @@ mkdir -p "$BUILD_DIR"
 cd "$BUILD_DIR"
 
 echo "Configuring CMake..."
-cmake -S "$SCRIPT_DIR" -B . -DCMAKE_BUILD_TYPE=Release
+cmake -S "$SCRIPT_DIR" -B . \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DPython3_EXECUTABLE="$PYTHON_BIN" \
+      -DPython3_ROOT_DIR="$PYTHON_ROOT" \
+      -DPython3_INCLUDE_DIR="$PYTHON_INCLUDE" \
+      -DPython3_LIBRARY="$PYTHON_LIBRARY" \
+      -DPython_EXECUTABLE="$PYTHON_BIN" \
+      -DPython_ROOT_DIR="$PYTHON_ROOT" \
+      -DPython_INCLUDE_DIR="$PYTHON_INCLUDE" \
+      -DPython_LIBRARY="$PYTHON_LIBRARY" \
+      -DPython_FIND_VIRTUALENV=FIRST \
+      -DPython_FIND_STRATEGY=LOCATION
 echo ""
 
 echo "Building C++ extensions..."
@@ -63,10 +77,10 @@ fi
 echo "Build successful: $SO_FILE"
 echo ""
 echo "Verifying module can be imported..."
-if python3 -c "import sys; sys.path.insert(0, '$BUILD_DIR'); import c_helpers; print('✓ Module imported successfully')" &>/dev/null; then
+if python3 -c "import sys; sys.path.insert(0, '$BUILD_DIR'); import c_helpers; print('✓ Module imported successfully')" 2>/dev/null; then
     echo "✓ Build verification passed"
 else
-    echo "⚠ Warning: Module built but import failed. Ensure PYTHONPATH includes '$BUILD_DIR'."
+    echo "⚠ Warning: Module built but import verification failed."
 fi
 
 echo ""
@@ -74,10 +88,5 @@ echo "=================================================="
 echo "Build Complete!"
 echo "=================================================="
 echo "Module location: $SO_FILE"
-echo ""
-echo "To use the module:"
-echo "  import sys"
-echo "  sys.path.insert(0, '$BUILD_DIR')"
-echo "  import c_helpers"
 echo ""
 

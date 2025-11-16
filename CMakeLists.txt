@@ -44,12 +44,8 @@ else()
     message(STATUS "CUDA not found - GPU acceleration disabled (CPU-only build)")
 endif()
 
-if (CMAKE_VERSION VERSION_LESS 3.18)
-    set(DEV_MODULE Development)
-else()
-    set(DEV_MODULE Development.Module)
-endif()
-find_package(Python 3.8 COMPONENTS Interpreter ${DEV_MODULE} REQUIRED)
+# Need Python interpreter + development headers/libs for nanobind.
+find_package(Python 3.8 COMPONENTS Interpreter Development REQUIRED)
 
 execute_process(
     COMMAND "${Python_EXECUTABLE}" -m nanobind --cmake_dir

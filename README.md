@@ -28,22 +28,43 @@ All repository documentation now lives in this single README. It combines the or
 
 ### 1.2 Environment & Build
 
+#### Option 1: Using Conda (Recommended)
+
+```bash
+# Create and activate conda environment
+conda create -n chesshacks python=3.14
+conda activate chesshacks
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Build the C++/CUDA extension
+./build.sh          # auto-detects CPU cores, installs nanobind if needed
+./build.sh clean    # removes build/ before rebuilding
+```
+
+The conda environment is automatically configured to add `build/` to `PYTHONPATH`, so you can import `c_helpers` from anywhere:
+
+```python
+import c_helpers
+print(f"CUDA available: {c_helpers.is_cuda_available()}")
+```
+
+#### Option 2: Using venv
+
 ```bash
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 
-# Build the C++/CUDA extension into build/
-./build.sh          # auto-detects CPU cores, installs nanobind if needed
-./build.sh clean    # removes build/ before rebuilding
+# Build the C++/CUDA extension
+./build.sh
 
-# Use the module from Python
-python - <<'PY'
+# Manually add to path in Python:
 import sys
 sys.path.insert(0, "build")
 import c_helpers
 print("Module OK")
-PY
 ```
 
 All artifacts remain inside `build/`. `src/main.py` also auto-runs `build.sh` if the module is missing.
