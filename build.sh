@@ -32,12 +32,6 @@ echo ""
 
 cd "$SCRIPT_DIR"
 
-if [[ ! -d "$SCRIPT_DIR/third_party/libtorch" ]]; then
-curl -LO https://download.pytorch.org/libtorch/cpu/libtorch-shared-with-deps-2.9.1%2Bcpu.zip
-    unzip libtorch-shared-with-deps-2.9.1%2Bcpu.zip
-    mv libtorch third_party/
-fi
-
 if [[ -z "${PYTHON_BIN:-}" ]]; then
     PYTHON_BIN=$(command -v python3)
 fi
@@ -91,8 +85,31 @@ ensure_clang_toolchain() {
     exit 1
 }
 
+ensure_unzip_tool() {
+    if command -v unzip >/dev/null 2>&1; then
+        return
+    fi
+    echo "Installing unzip via pip (--user)..."
+    if pip_install --user unzip; then
+        hash -r
+        if ! command -v unzip >/dev/null 2>&1; then
+            echo "ERROR: unzip still not available after installing via pip" >&2
+            exit 1
+        fi
+    else
+        echo "ERROR: Failed to install unzip via pip" >&2
+        exit 1
+    fi
+}
+
 ensure_tool_via_pip "cmake" "cmake"
 ensure_clang_toolchain
+
+if [[ ! -d "$SCRIPT_DIR/third_party/libtorch" ]]; then
+curl -LO https://download.pytorch.org/libtorch/cpu/libtorch-shared-with-deps-2.9.1%2Bcpu.zip
+    unzip libtorch-shared-with-deps-2.9.1%2Bcpu.zip
+    mv libtorch third_party/
+fi
 
 TORCH_DIR="$SCRIPT_DIR/third_party/libtorch"
 TORCH_CMAKE_DIR="$TORCH_DIR/share/cmake/Torch"
