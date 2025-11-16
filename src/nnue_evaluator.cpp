@@ -1,9 +1,11 @@
 #include "nnue_evaluator.h"
 #include <algorithm>
-#include <cmath>
-#include <cstring>
+#include <array>
+#include <cctype>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <torch/script.h>
 
 // Piece type constants (matching Virgo-style)
 enum PieceType {
@@ -15,147 +17,34 @@ enum PieceType {
   KING_TYPE = 5
 };
 
-// Color constants (matching Virgo-style)
-enum ColorType { BLACK_COLOR = 0, WHITE_COLOR = 1 };
-
 NNUEEvaluator::NNUEEvaluator()
-    : model_loaded_(false), hidden_size_(0), hidden2_size_(0), hidden3_size_(0),
-      ft_weight_(nullptr), ft_bias_(nullptr), fc1_weight_(nullptr),
-      fc1_bias_(nullptr), fc2_weight_(nullptr), fc2_bias_(nullptr),
-      fc3_weight_(nullptr), fc3_bias_(nullptr) {}
-
-NNUEEvaluator::~NNUEEvaluator() { free_memory(); }
-
-void NNUEEvaluator::free_memory() {
-  delete[] ft_weight_;
-  delete[] ft_bias_;
-  delete[] fc1_weight_;
-  delete[] fc1_bias_;
-  delete[] fc2_weight_;
-  delete[] fc2_bias_;
-  delete[] fc3_weight_;
-  delete[] fc3_bias_;
-
-  ft_weight_ = nullptr;
-  ft_bias_ = nullptr;
-  fc1_weight_ = nullptr;
-  fc1_bias_ = nullptr;
-  fc2_weight_ = nullptr;
-  fc2_bias_ = nullptr;
-  fc3_weight_ = nullptr;
-  fc3_bias_ = nullptr;
-}
-
-void NNUEEvaluator::allocate_memory() {
-  // Free any existing memory
-  free_memory();
-
-  // Allocate new memory
-  ft_weight_ = new float[hidden_size_ * INPUT_SIZE];
-  ft_bias_ = new float[hidden_size_];
-
-  fc1_weight_ = new float[hidden2_size_ * hidden_size_];
-  fc1_bias_ = new float[hidden2_size_];
-
-  fc2_weight_ = new float[hidden3_size_ * hidden2_size_];
-  fc2_bias_ = new float[hidden3_size_];
-
-  fc3_weight_ = new float[1 * hidden3_size_];
-  fc3_bias_ = new float[1];
-}
+    : model_loaded_(false), eval_mean_(0.0), eval_std_(1.0) {}
 
 bool NNUEEvaluator::load_model(const std::string &model_path) {
-  std::ifstream file(model_path, std::ios::binary);
-  if (!file.is_open()) {
-    std::cerr << "Error: Could not open NNUE model file: " << model_path
-              << std::endl;
+  try {
+    module_ = torch::jit::load(model_path);
+    module_.eval();
+    module_.to(torch::kCPU);
+  } catch (const c10::Error &e) {
+    std::cerr << "Error: Failed to load TorchScript NNUE model '" << model_path
+              << "': " << e.what() << std::endl;
+    model_loaded_ = false;
     return false;
   }
 
-  // Read and verify magic number
-  char magic[4];
-  file.read(magic, 4);
-  if (std::strncmp(magic, "NNUE", 4) != 0) {
-    std::cerr << "Error: Invalid NNUE model file (bad magic number)"
-              << std::endl;
-    return false;
-  }
-
-  // Read version
-  uint32_t version;
-  file.read(reinterpret_cast<char *>(&version), sizeof(uint32_t));
-  if (version != 1) {
-    std::cerr << "Error: Unsupported NNUE model version: " << version
-              << std::endl;
-    return false;
-  }
-
-  // Read architecture
-  uint32_t hidden_size, hidden2_size, hidden3_size;
-  file.read(reinterpret_cast<char *>(&hidden_size), sizeof(uint32_t));
-  file.read(reinterpret_cast<char *>(&hidden2_size), sizeof(uint32_t));
-  file.read(reinterpret_cast<char *>(&hidden3_size), sizeof(uint32_t));
-
-  hidden_size_ = static_cast<int>(hidden_size);
-  hidden2_size_ = static_cast<int>(hidden2_size);
-  hidden3_size_ = static_cast<int>(hidden3_size);
-
-  std::cout << "Loading NNUE model from: " << model_path << std::endl;
-  std::cout << "  Architecture: 768 → " << hidden_size_ << " → "
-            << hidden2_size_ << " → " << hidden3_size_ << " → 1" << std::endl;
-
-  // Allocate memory for weights
-  allocate_memory();
-
-  // Helper lambda to read layer weights
-  auto read_layer = [&](const char *name, float *weight, int weight_size,
-                        float *bias, int bias_size) {
-    file.read(reinterpret_cast<char *>(weight), weight_size * sizeof(float));
-    file.read(reinterpret_cast<char *>(bias), bias_size * sizeof(float));
-
-    if (!file.good()) {
-      std::cerr << "Error reading layer: " << name << std::endl;
-      return false;
-    }
-    return true;
-  };
-
-  // Read all layers
-  if (!read_layer("ft", ft_weight_, hidden_size_ * INPUT_SIZE, ft_bias_,
-                  hidden_size_)) {
-    free_memory();
-    return false;
-  }
-
-  if (!read_layer("fc1", fc1_weight_, hidden2_size_ * hidden_size_, fc1_bias_,
-                  hidden2_size_)) {
-    free_memory();
-    return false;
-  }
-
-  if (!read_layer("fc2", fc2_weight_, hidden3_size_ * hidden2_size_, fc2_bias_,
-                  hidden3_size_)) {
-    free_memory();
-    return false;
-  }
-
-  if (!read_layer("fc3", fc3_weight_, 1 * hidden3_size_, fc3_bias_, 1)) {
-    free_memory();
-    return false;
-  }
+  load_stats_for(model_path);
 
   model_loaded_ = true;
-  std::cout << "✓ NNUE model loaded successfully" << std::endl;
-
+  std::cout << "✓ Loaded TorchScript NNUE model: " << model_path << std::endl;
+  std::cout << "  Normalization stats: mean=" << eval_mean_
+            << " cp, std=" << eval_std_ << " cp" << std::endl;
   return true;
 }
 
 void NNUEEvaluator::board_to_features(const bitboard::BitboardState &board,
                                       float *features, bool perspective) const {
-  // Initialize all features to 0
   std::fill(features, features + INPUT_SIZE, 0.0f);
 
-  // Map piece values to piece types
   auto get_piece_type = [](Piece piece) -> int {
     int abs_piece = (piece < 0) ? -piece : piece;
     switch (abs_piece) {
@@ -176,14 +65,14 @@ void NNUEEvaluator::board_to_features(const bitboard::BitboardState &board,
     }
   };
 
-  // Square mirror table for black's perspective (180 degree rotation)
   static const int mirror[64] = {
       56, 57, 58, 59, 60, 61, 62, 63, 48, 49, 50, 51, 52, 53, 54, 55,
       40, 41, 42, 43, 44, 45, 46, 47, 32, 33, 34, 35, 36, 37, 38, 39,
       24, 25, 26, 27, 28, 29, 30, 31, 16, 17, 18, 19, 20, 21, 22, 23,
       8,  9,  10, 11, 12, 13, 14, 15, 0,  1,  2,  3,  4,  5,  6,  7};
 
-  // Iterate through all squares and set features
+  const bool mover_is_white = perspective;
+
   for (int square = 0; square < 64; square++) {
     Piece piece = board.get_piece_at(square);
     if (piece == EMPTY) {
@@ -196,96 +85,35 @@ void NNUEEvaluator::board_to_features(const bitboard::BitboardState &board,
       continue;
     }
 
-    // Determine color index and square based on perspective
-    int color_idx, feature_square;
+    bool is_friendly = (is_white == mover_is_white);
+    int color_idx = is_friendly ? 0 : 1; // First half = friendly
+    int feature_square = mover_is_white ? square : mirror[square];
 
-    if (perspective) { // White's perspective
-      color_idx = is_white ? WHITE_COLOR : BLACK_COLOR;
-      feature_square = square;
-    } else { // Black's perspective (flip board and colors)
-      color_idx = is_white ? BLACK_COLOR : WHITE_COLOR;
-      feature_square = mirror[square];
-    }
-
-    // Calculate feature index: [color][piece_type][square]
-    // Layout: first 384 features for color 0, next 384 for color 1
-    // Within each color: 64 features per piece type
     int feature_idx = color_idx * (6 * 64) + piece_type * 64 + feature_square;
     features[feature_idx] = 1.0f;
   }
 }
 
-void NNUEEvaluator::dense_layer(const float *input, int input_size,
-                                const float *weight, const float *bias,
-                                float *output, int output_size) const {
-  // Initialize output with bias
-  std::copy(bias, bias + output_size, output);
-
-  // Matrix multiplication: output = input * weight^T + bias
-  // weight is stored in row-major format: [output_size, input_size]
-  for (int i = 0; i < output_size; i++) {
-    for (int j = 0; j < input_size; j++) {
-      output[i] += input[j] * weight[i * input_size + j];
-    }
-  }
-}
-
-float NNUEEvaluator::forward(const float *input) const {
-  // Allocate temporary buffers for intermediate activations
-  float *hidden1 = new float[hidden_size_];
-  float *hidden2 = new float[hidden2_size_];
-  float *hidden3 = new float[hidden3_size_];
-  float output;
-
-  // Feature transformer: 768 → hidden_size
-  dense_layer(input, INPUT_SIZE, ft_weight_, ft_bias_, hidden1, hidden_size_);
-  clipped_relu(hidden1, hidden_size_);
-
-  // Hidden layer 1: hidden_size → hidden2_size
-  dense_layer(hidden1, hidden_size_, fc1_weight_, fc1_bias_, hidden2,
-              hidden2_size_);
-  clipped_relu(hidden2, hidden2_size_);
-
-  // Hidden layer 2: hidden2_size → hidden3_size
-  dense_layer(hidden2, hidden2_size_, fc2_weight_, fc2_bias_, hidden3,
-              hidden3_size_);
-  clipped_relu(hidden3, hidden3_size_);
-
-  // Output layer: hidden3_size → 1 (linear, no activation)
-  dense_layer(hidden3, hidden3_size_, fc3_weight_, fc3_bias_, &output, 1);
-
-  // Clean up
-  delete[] hidden1;
-  delete[] hidden2;
-  delete[] hidden3;
-
-  return output;
-}
-
 int NNUEEvaluator::evaluate(const bitboard::BitboardState &board) const {
   if (!model_loaded_) {
-    std::cerr << "Error: NNUE model not loaded" << std::endl;
+    std::cerr << "Warning: NNUE model not loaded; returning 0 evaluation."
+              << std::endl;
     return 0;
   }
 
-  // Extract features from side-to-move perspective
-  float features[INPUT_SIZE];
-  bool perspective = board.white_to_move();
-  board_to_features(board, features, perspective);
+  std::array<float, INPUT_SIZE> features{};
+  board_to_features(board, features.data(), board.white_to_move());
 
-  // Run forward pass
-  float raw_score = forward(features);
+  auto options = torch::TensorOptions().dtype(torch::kFloat32);
+  torch::Tensor input =
+      torch::from_blob(features.data(), {1, INPUT_SIZE}, options).clone();
 
-  // Convert from normalized score to centipawns
-  // The model outputs normalized scores, we need to convert back
-  // Assuming the model was trained with scores normalized to approximately [-3,
-  // 3] and the original scores were in centipawns divided by 100 So: centipawns
-  // = raw_score * 100
-  float score_cp = raw_score * 100.0f;
+  torch::InferenceMode guard;
+  torch::Tensor output = module_.forward({input}).toTensor().reshape({});
+  double normalized = output.item<double>();
+  double score_cp = normalized * eval_std_ + eval_mean_;
 
-  // Apply sign based on side to move
-  // Model is trained from white's perspective, so if black to move, negate
-  if (!perspective) {
+  if (!board.white_to_move()) {
     score_cp = -score_cp;
   }
 
@@ -295,4 +123,74 @@ int NNUEEvaluator::evaluate(const bitboard::BitboardState &board) const {
 int NNUEEvaluator::evaluate(const std::string &fen) const {
   bitboard::BitboardState board(fen);
   return evaluate(board);
+}
+
+bool NNUEEvaluator::load_stats_for(const std::string &model_path) {
+  namespace fs = std::filesystem;
+  fs::path stats_path = fs::path(model_path).parent_path() / "nnue_stats.json";
+  if (!fs::exists(stats_path)) {
+    std::cerr << "Warning: NNUE stats file not found at " << stats_path
+              << ". Using defaults (mean=0, std=1)." << std::endl;
+    eval_mean_ = 0.0;
+    eval_std_ = 1.0;
+    return false;
+  }
+
+  std::ifstream stats(stats_path);
+  if (!stats.is_open()) {
+    std::cerr << "Warning: Could not open NNUE stats file " << stats_path
+              << ". Using defaults (mean=0, std=1)." << std::endl;
+    eval_mean_ = 0.0;
+    eval_std_ = 1.0;
+    return false;
+  }
+
+  std::string content((std::istreambuf_iterator<char>(stats)),
+                      std::istreambuf_iterator<char>());
+  auto extract = [&](const std::string &key, double &out) -> bool {
+    auto pos = content.find(key);
+    if (pos == std::string::npos) {
+      return false;
+    }
+    pos = content.find(':', pos);
+    if (pos == std::string::npos) {
+      return false;
+    }
+    ++pos;
+    while (pos < content.size() &&
+           std::isspace(static_cast<unsigned char>(content[pos]))) {
+      ++pos;
+    }
+    size_t end = pos;
+    while (end < content.size() &&
+           (std::isdigit(static_cast<unsigned char>(content[end])) ||
+            content[end] == '.' || content[end] == '-' || content[end] == '+' ||
+            content[end] == 'e' || content[end] == 'E')) {
+      ++end;
+    }
+    try {
+      out = std::stod(content.substr(pos, end - pos));
+      return true;
+    } catch (...) {
+      return false;
+    }
+  };
+
+  bool mean_ok = extract("eval_mean", eval_mean_);
+  bool std_ok = extract("eval_std", eval_std_);
+  if (!std_ok || eval_std_ <= 0.0) {
+    eval_std_ = 1.0;
+    std_ok = false;
+  }
+  if (!mean_ok) {
+    eval_mean_ = 0.0;
+  }
+
+  if (!mean_ok || !std_ok) {
+    std::cerr << "Warning: Invalid values in " << stats_path
+              << ". Using defaults (mean=0, std=" << eval_std_ << ")."
+              << std::endl;
+  }
+
+  return mean_ok && std_ok;
 }

@@ -2,6 +2,8 @@ cmake_minimum_required(VERSION 3.18...3.27)
 
 # Initial project declaration with CXX
 project(chesshacks LANGUAGES CXX)
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Try to find CUDA compiler using 'which nvcc'
 if(NOT DEFINED CMAKE_CUDA_COMPILER)
@@ -34,7 +36,7 @@ if(CMAKE_CUDA_COMPILER)
     endif()
     
     # Set CUDA standard
-    set(CMAKE_CUDA_STANDARD 14)
+    set(CMAKE_CUDA_STANDARD 17)
     set(CMAKE_CUDA_STANDARD_REQUIRED ON)
     
     # Find CUDA Toolkit
@@ -83,6 +85,11 @@ execute_process(
     OUTPUT_VARIABLE nanobind_ROOT
 )
 find_package(nanobind CONFIG REQUIRED)
+if(NOT Torch_DIR)
+    set(Torch_DIR "${CMAKE_SOURCE_DIR}/third_party/libtorch/share/cmake/Torch")
+endif()
+find_package(Torch REQUIRED)
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${TORCH_CXX_FLAGS}")
 
 # Add the source directory to include paths
 include_directories(${CMAKE_SOURCE_DIR}/src)
@@ -116,7 +123,7 @@ if(CUDA_ENABLED)
         ${CUDAToolkit_INCLUDE_DIRS}
         ${CMAKE_SOURCE_DIR}/src/cuda
     )
-    target_link_libraries(c_helpers PRIVATE CUDA::cudart)
+    target_link_libraries(c_helpers PRIVATE CUDA::cudart ${TORCH_LIBRARIES})
     set_target_properties(c_helpers PROPERTIES
         CUDA_SEPARABLE_COMPILATION ON
         CUDA_RESOLVE_DEVICE_SYMBOLS ON
@@ -135,7 +142,7 @@ else()
     target_include_directories(c_helpers PRIVATE
         ${CMAKE_SOURCE_DIR}/src/cuda
     )
-
+    target_link_libraries(c_helpers PRIVATE ${TORCH_LIBRARIES})
     message(STATUS "Building CPU-only version")
 endif()
 

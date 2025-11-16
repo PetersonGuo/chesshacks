@@ -2,21 +2,17 @@
 #define NNUE_EVALUATOR_H
 
 #include "bitboard/bitboard_state.h"
+#include <filesystem>
 #include <memory>
 #include <string>
+#include <torch/script.h>
 #include <vector>
 
 /**
  * NNUE (Efficiently Updatable Neural Network) Evaluator
  *
- * This class loads and runs inference on a trained NNUE model for chess
- * position evaluation. The model uses Virgo-style bitboard representation (768
- * features) and a simple feedforward architecture optimized for fast inference.
- *
- * Architecture: 768 → 256 → 32 → 32 → 1
- * - Input: Virgo-style bitboards (2 colors × 6 pieces × 64 squares)
- * - Hidden layers use ClippedReLU activation
- * - Output is linear (no activation) for full eval range
+ * Loads the TorchScript NNUE model produced from train/nnue_model/checkpoints/
+ * best_model.pt and runs inference via libtorch.
  */
 class NNUEEvaluator {
 public:
@@ -27,14 +23,9 @@ public:
   NNUEEvaluator();
 
   /**
-   * Destructor - frees allocated memory
-   */
-  ~NNUEEvaluator();
-
-  /**
-   * Load NNUE model from binary file
+   * Load NNUE model from TorchScript file
    *
-   * @param model_path Path to binary model file (.bin)
+   * @param model_path Path to TorchScript model file (.pt)
    * @return true if loaded successfully, false otherwise
    */
   bool load_model(const std::string &model_path);
@@ -62,49 +53,14 @@ public:
    */
   int evaluate(const std::string &fen) const;
 
-  /**
-   * Get model architecture info
-   */
-  int get_hidden_size() const { return hidden_size_; }
-  int get_hidden2_size() const { return hidden2_size_; }
-  int get_hidden3_size() const { return hidden3_size_; }
-
 private:
-  // Model loaded flag
+  static constexpr int INPUT_SIZE = 768;
+  static constexpr int HALF_INPUT = INPUT_SIZE / 2;
+
   bool model_loaded_;
-
-  // Model architecture
-  static constexpr int INPUT_SIZE = 768; // 2 colors × 6 pieces × 64 squares
-  int hidden_size_;
-  int hidden2_size_;
-  int hidden3_size_;
-
-  // Layer weights and biases (stored as 1D arrays for efficiency)
-  // Feature transformer (ft): 768 → hidden_size
-  float *ft_weight_; // [hidden_size, 768]
-  float *ft_bias_;   // [hidden_size]
-
-  // Hidden layer 1 (fc1): hidden_size → hidden2_size
-  float *fc1_weight_; // [hidden2_size, hidden_size]
-  float *fc1_bias_;   // [hidden2_size]
-
-  // Hidden layer 2 (fc2): hidden2_size → hidden3_size
-  float *fc2_weight_; // [hidden3_size, hidden2_size]
-  float *fc2_bias_;   // [hidden3_size]
-
-  // Output layer (fc3): hidden3_size → 1
-  float *fc3_weight_; // [1, hidden3_size]
-  float *fc3_bias_;   // [1]
-
-  /**
-   * Free all allocated memory
-   */
-  void free_memory();
-
-  /**
-   * Allocate memory for model weights based on architecture
-   */
-  void allocate_memory();
+  mutable torch::jit::script::Module module_;
+  double eval_mean_;
+  double eval_std_;
 
   /**
    * Convert BitboardState to Virgo-style bitboard features
@@ -115,40 +71,7 @@ private:
    */
   void board_to_features(const bitboard::BitboardState &board, float *features,
                          bool perspective) const;
-
-  /**
-   * Forward pass through the network
-   *
-   * @param input Input features (768 elements)
-   * @return Raw network output (normalized score)
-   */
-  float forward(const float *input) const;
-
-  /**
-   * ClippedReLU activation: min(max(x, 0), 1)
-   * Applied in-place to array
-   *
-   * @param x Array to apply activation to
-   * @param size Size of array
-   */
-  inline void clipped_relu(float *x, int size) const {
-    for (int i = 0; i < size; i++) {
-      x[i] = std::min(std::max(x[i], 0.0f), 1.0f);
-    }
-  }
-
-  /**
-   * Dense layer: output = input * weight^T + bias
-   *
-   * @param input Input vector
-   * @param input_size Size of input
-   * @param weight Weight matrix (row-major, [output_size, input_size])
-   * @param bias Bias vector
-   * @param output Output vector (must be pre-allocated)
-   * @param output_size Size of output
-   */
-  void dense_layer(const float *input, int input_size, const float *weight,
-                   const float *bias, float *output, int output_size) const;
+  bool load_stats_for(const std::string &model_path);
 };
 
 #endif // NNUE_EVALUATOR_H

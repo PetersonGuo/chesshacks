@@ -32,9 +32,28 @@ echo ""
 
 cd "$SCRIPT_DIR"
 
+if [[ ! -d "$SCRIPT_DIR/third_party/libtorch" ]]; then
+curl -LO https://download.pytorch.org/libtorch/cpu/libtorch-shared-with-deps-2.9.1%2Bcpu.zip
+    unzip libtorch-shared-with-deps-2.9.1%2Bcpu.zip
+    mv libtorch third_party/
+fi
+
 if [[ -z "${PYTHON_BIN:-}" ]]; then
     PYTHON_BIN=$(command -v python3)
 fi
+
+UV_BIN=$(command -v uv || true)
+if [[ -n "$UV_BIN" ]]; then
+    echo "Using uv for pip commands: $UV_BIN pip"
+    PIP_RUN=("$UV_BIN" pip)
+else
+    echo "uv command not found; falling back to python -m pip"
+    PIP_RUN=("$PYTHON_BIN" -m pip)
+fi
+
+pip_install() {
+    "${PIP_RUN[@]}" "$@"
+}
 
 ensure_tool_via_pip() {
     local cmd="$1"
@@ -43,7 +62,7 @@ ensure_tool_via_pip() {
         return
     fi
     echo "Installing $cmd via pip (--user) (package: $pkg)..."
-    if "$PYTHON_BIN" -m pip install --user "$pkg"; then
+    if pip_install --user "$pkg"; then
         hash -r
         if ! command -v "$cmd" >/dev/null 2>&1; then
             echo "ERROR: $cmd still not available after installing $pkg via pip" >&2
@@ -61,7 +80,7 @@ ensure_clang_toolchain() {
     fi
     for pkg in clang-llvm clang; do
         echo "Attempting to install clang toolchain via pip package '$pkg'..."
-        if "$PYTHON_BIN" -m pip install --user "$pkg"; then
+        if pip_install --user "$pkg"; then
             hash -r
             if command -v clang >/dev/null 2>&1 && command -v clang++ >/dev/null 2>&1; then
                 return
@@ -74,6 +93,17 @@ ensure_clang_toolchain() {
 
 ensure_tool_via_pip "cmake" "cmake"
 ensure_clang_toolchain
+
+TORCH_DIR="$SCRIPT_DIR/third_party/libtorch"
+TORCH_CMAKE_DIR="$TORCH_DIR/share/cmake/Torch"
+if [[ ! -d "$TORCH_CMAKE_DIR" ]]; then
+    echo "ERROR: Vendored libtorch directory not found at $TORCH_CMAKE_DIR" >&2
+    echo "Please place the libtorch CPU distribution under third_party/libtorch." >&2
+    exit 1
+fi
+echo "Using vendored libtorch: $TORCH_DIR"
+export TORCH_CUDA_ARCH_LIST=${TORCH_CUDA_ARCH_LIST:-"8.0;8.6"}
+export LD_LIBRARY_PATH="$TORCH_DIR/lib:${LD_LIBRARY_PATH:-}"
 
 PYTHON_ROOT=$("$PYTHON_BIN" -c "import sys, pathlib; print(pathlib.Path(sys.executable).parent.parent)")
 PYTHON_INCLUDE=$("$PYTHON_BIN" -c "import sysconfig; print(sysconfig.get_path('include'))")
@@ -144,7 +174,7 @@ echo "Installing Python dependencies from requirements.txt..."
 # Check if we're in a virtual environment
 if [[ -z "${VIRTUAL_ENV:-}" ]]; then
     # Not in venv, try to install with --user or skip if it fails
-    if ! "$PYTHON_BIN" -m pip install --user -r "$SCRIPT_DIR/requirements.txt" 2>/dev/null; then
+    if ! pip_install --user -r "$SCRIPT_DIR/requirements.txt" 2>/dev/null; then
         echo "⚠ Warning: Failed to install requirements (may already be installed or need venv)"
         echo "Continuing with build..."
     else
@@ -152,7 +182,7 @@ if [[ -z "${VIRTUAL_ENV:-}" ]]; then
     fi
 else
     # In venv, normal install
-    if ! "$PYTHON_BIN" -m pip install -r "$SCRIPT_DIR/requirements.txt"; then
+    if ! pip_install -r "$SCRIPT_DIR/requirements.txt"; then
         echo "⚠ Warning: Failed to install requirements (may already be installed)"
         echo "Continuing with build..."
     else
@@ -185,6 +215,7 @@ cmake -S "$SCRIPT_DIR" -B . \
       -DCMAKE_C_COMPILER="$C_COMPILER" \
       -DCMAKE_CXX_COMPILER="$CXX_COMPILER" \
       -DCMAKE_BUILD_TYPE=Release \
+      -DTorch_DIR="$TORCH_CMAKE_DIR" \
       -DPython3_EXECUTABLE="$PYTHON_BIN" \
       -DPython3_ROOT_DIR="$PYTHON_ROOT" \
       -DPython3_INCLUDE_DIR="$PYTHON_INCLUDE" \

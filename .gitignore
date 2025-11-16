@@ -11,3 +11,4 @@ train/checkpoints
 CMakeFiles/
 data
 checkpoints
+third_party/libtorch
