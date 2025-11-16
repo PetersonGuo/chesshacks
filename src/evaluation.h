@@ -36,7 +36,9 @@ int static_exchange_eval(ChessBoard &board, const Move &move);
 void order_moves(ChessBoard &board, std::vector<Move> &moves,
                  TranspositionTable *tt, const std::string &fen,
                  KillerMoves *killers = nullptr, int ply = 0,
-                 HistoryTable *history = nullptr);
+                 HistoryTable *history = nullptr,
+                 CounterMoveTable *counters = nullptr, int prev_piece = 0,
+                 int prev_to = -1, ContinuationHistory *cont_history = nullptr);
 
 // Batch evaluate multiple positions in parallel
 std::vector<int> batch_evaluate_mt(const std::vector<std::string> &fens,

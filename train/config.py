@@ -30,7 +30,7 @@ class TrainingConfig:
     hidden3_size: int = 32
 
     # Data loading
-    num_workers: int = 4
+    num_workers: int = 16
     max_train_positions: Optional[int] = None  # None = load all
     max_val_positions: Optional[int] = None
     train_val_split_ratio: float = 0.9  # Ratio of data to use for training (rest for validation)
@@ -75,11 +75,11 @@ class TrainingConfig:
     stockfish_path: str = 'stockfish'
     download_year: Optional[int] = None  # Use latest month (None = auto-detect latest)
     download_month: Optional[int] = None  # Use latest month (None = auto-detect latest)
-    download_max_games: Optional[int] = 10000  # Maximum games to download (simplified workflow)
+    download_max_games: Optional[int] = 100000  # Maximum games to download (simplified workflow)
     download_max_games_searched: Optional[int] = None  # Maximum total games to search (None = unlimited)
     download_depth: int = 10
     download_positions_per_game: int = 10
-    download_num_workers: int = 4
+    download_num_workers: int = 16
     download_batch_size: int = 100
     download_rated_only: bool = True  # Download rated games only
     download_output_dir: str = 'data'  # Output directory for downloaded data

@@ -211,7 +211,14 @@ def train_epoch(model: torch.nn.Module, train_loader: torch.utils.data.DataLoade
         optimizer.zero_grad()
 
         # Forward pass with sparse inputs
-        outputs = model(white_indices, white_values, black_indices, black_values)
+        batch_size = targets.shape[0]
+        outputs = model(
+            white_indices,
+            white_values,
+            black_indices,
+            black_values,
+            batch_size=batch_size
+        )
 
         # Calculate loss
         loss = criterion(outputs, targets)
@@ -267,7 +274,14 @@ def validate(model: torch.nn.Module, val_loader: torch.utils.data.DataLoader,
             targets = targets.to(device)
 
             # Forward pass
-            outputs = model(white_indices, white_values, black_indices, black_values)
+            batch_size = targets.shape[0]
+            outputs = model(
+                white_indices,
+                white_values,
+                black_indices,
+                black_values,
+                batch_size=batch_size
+            )
 
             # Calculate loss
             loss = criterion(outputs, targets)

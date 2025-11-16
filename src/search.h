@@ -50,11 +50,13 @@ int quiescence_search(ChessBoard &board, int alpha, int beta,
                       int q_depth = 0, int max_q_depth = 4);
 
 // Iterative deepening wrapper with aspiration windows
-int iterative_deepening(const std::string &fen, int max_depth, int alpha,
-                        int beta, bool maximizingPlayer,
-                        const std::function<int(const std::string &)> &evaluate,
-                        TranspositionTable &tt, KillerMoves *killers = nullptr,
-                        HistoryTable *history = nullptr);
+int iterative_deepening(
+    const std::string &fen, int max_depth, int alpha, int beta,
+    bool maximizingPlayer,
+    const std::function<int(const std::string &)> &evaluate,
+    TranspositionTable &tt, KillerMoves *killers = nullptr,
+    HistoryTable *history = nullptr, CounterMoveTable *counters = nullptr,
+    ContinuationHistory *cont_history = nullptr);
 
 // Find best move (returns FEN after move)
 std::string

@@ -5,11 +5,16 @@ This module provides the entrypoint and reset functions required by the
 chess_manager decorator system for connecting to the game server.
 """
 
-from .utils import chess_manager, GameContext
-from chess import Move
-import sys
+import math
 import os
 import subprocess
+import sys
+from typing import Dict
+
+import chess
+from chess import Move
+
+from .utils import GameContext, chess_manager
 
 # Add paths for c_helpers module
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -26,7 +31,7 @@ except ModuleNotFoundError:
     print("=" * 80)
     print("C++ module not found - triggering automatic build...")
     print("=" * 80)
-    
+
     build_script = os.path.join(project_root, "build.sh")
     if os.path.exists(build_script):
         try:
@@ -36,12 +41,13 @@ except ModuleNotFoundError:
                 cwd=project_root,
                 check=True,
                 capture_output=True,
-                text=True
+                text=True,
             )
             print(result.stdout)
-            
+
             # Try import again
             import c_helpers
+
             print("✓ Build successful - module imported")
         except subprocess.CalledProcessError as e:
             print(f"Build failed: {e}")
@@ -80,11 +86,47 @@ print(f"  - Search depth: {SEARCH_DEPTH}")
 print(f"  - Threads: {NUM_THREADS if NUM_THREADS > 0 else 'auto'}")
 
 
+def _build_probability_distribution(fen: str) -> Dict[Move, float]:
+    """Use multi-PV search to construct a probability distribution over moves."""
+    board_snapshot = chess.Board(fen)
+    legal_moves = set(board_snapshot.generate_legal_moves())
+    if not legal_moves:
+        raise ValueError("No legal moves available for probability distribution")
+
+    max_lines = min(5, len(legal_moves))
+    score_map: Dict[Move, float] = {}
+
+    try:
+        pv_lines = c_helpers.multi_pv_search(
+            fen,
+            SEARCH_DEPTH,
+            max_lines,
+            engine.nnue_evaluate,
+            transposition_table,
+            NUM_THREADS,
+            killer_moves,
+            history_table,
+            c_helpers.CounterMoveTable(),
+        )
+
+        for line in pv_lines:
+            try:
+                move = Move.from_uci(line.uci_move)
+            except ValueError:
+                continue
+            if move in legal_moves:
+                score_map[move] = line.score
+    except Exception as exc:
+        print(f"multi_pv_search failed ({exc}); falling back to deterministic move")
+
+    return score_map
+
+
 @chess_manager.entrypoint
-def make_move(ctx: GameContext) -> Move:
+def make_move(ctx: GameContext) -> dict[Move, float]:
     """
     Main entrypoint - called every time the engine needs to make a move.
-    Returns a python-chess Move object that is a legal move for the current position.
+    Returns a probability distribution over legal moves (dict[Move, float]).
     """
     print(f"Thinking... (depth={SEARCH_DEPTH})")
 
@@ -121,22 +163,33 @@ def make_move(ctx: GameContext) -> Move:
     print(f"Engine selected: {best_move_uci}")
 
     # Convert UCI string to python-chess Move object
+    legal_moves = list(ctx.board.generate_legal_moves())
+    if not legal_moves:
+        ctx.logProbabilities({})
+        raise ValueError("No legal moves available")
+
     try:
         best_move = Move.from_uci(best_move_uci)
     except ValueError:
-        # Fallback if UCI parsing fails
         print(f"Warning: Failed to parse UCI move '{best_move_uci}'")
-        legal_moves = list(ctx.board.generate_legal_moves())
-        if not legal_moves:
-            ctx.logProbabilities({})
-            raise ValueError("No legal moves available")
         best_move = legal_moves[0]
 
-    # For move probabilities, we can use multi-PV to get alternatives
-    # For now, assign full probability to the best move
-    ctx.logProbabilities({best_move: 1.0})
+    score_map = _build_probability_distribution(ctx.board.fen())
+    if best_move not in score_map:
+        score_map[best_move] = 0.0
 
-    return best_move
+    if not score_map:
+        score_map = {best_move: 1.0}
+
+    max_score = max(score_map.values())
+    exp_scores = {
+        move: math.exp((score - max_score) / 200.0) for move, score in score_map.items()
+    }
+    total = sum(exp_scores.values())
+    probabilities = {move: value / total for move, value in exp_scores.items()}
+    ctx.logProbabilities(probabilities)
+
+    return probabilities
 
 
 @chess_manager.reset

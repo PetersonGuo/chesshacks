@@ -237,7 +237,9 @@ std::vector<int> batch_evaluate_mt(const std::vector<std::string> &fens,
 
 void order_moves(ChessBoard &board, std::vector<Move> &moves,
                  TranspositionTable *tt, const std::string &fen,
-                 KillerMoves *killers, int ply, HistoryTable *history) {
+                 KillerMoves *killers, int ply, HistoryTable *history,
+                 CounterMoveTable *counters, int prev_piece, int prev_to,
+                 ContinuationHistory *cont_history) {
   std::vector<std::pair<Move, int>> scored_moves;
   scored_moves.reserve(moves.size());
 
@@ -251,6 +253,7 @@ void order_moves(ChessBoard &board, std::vector<Move> &moves,
   for (const Move &move : moves) {
     int score = 0;
 
+    Piece moving_piece = board.get_piece_at(move.from);
     // Check if this is the TT best move (highest priority)
     board.make_move(move);
     std::string move_fen = board.to_fen();
@@ -264,6 +267,11 @@ void order_moves(ChessBoard &board, std::vector<Move> &moves,
     } else if (killers && killers->is_killer(ply, move_fen)) {
       // Killer moves (good quiet moves from sibling nodes)
       score = 850000;
+    } else if (counters && prev_to >= 0) {
+      std::string counter = counters->get_counter(prev_piece, prev_to);
+      if (!counter.empty() && counter == move_fen) {
+        score = 830000;
+      }
     } else if (board.is_capture(move)) {
       // Captures ordered by SEE (Static Exchange Evaluation)
       int see_score = static_exchange_eval(board, move);
@@ -279,14 +287,17 @@ void order_moves(ChessBoard &board, std::vector<Move> &moves,
     } else {
       // Quiet moves - use history heuristic if available
       if (history) {
-        Piece piece = board.get_piece_at(move.from);
-        score = history->get_score(piece, move.to);
+        score = history->get_score(moving_piece, move.to);
       } else {
         // Fallback to center control heuristic
         int to_rank = move.to / 8;
         int to_file = move.to % 8;
         double center_dist = std::abs(to_rank - 3.5) + std::abs(to_file - 3.5);
         score = 10000 - static_cast<int>(center_dist * 1000);
+      }
+      if (cont_history && prev_to >= 0) {
+        score += cont_history->get_score(prev_piece, prev_to, moving_piece,
+                                         move.to);
       }
     }
 

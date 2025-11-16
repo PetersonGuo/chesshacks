@@ -6,6 +6,7 @@ HalfKP variant for chess position evaluation
 import torch
 import torch.nn as nn
 import chess
+from typing import Optional
 
 
 class ClippedReLU(nn.Module):
@@ -296,7 +297,7 @@ class NNUEModelSparse(nn.Module):
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
 
-    def forward(self, white_indices, white_values, black_indices, black_values):
+    def forward(self, white_indices, white_values, black_indices, black_values, batch_size: Optional[int] = None):
         """
         Forward pass through the network with sparse inputs
 
@@ -309,8 +310,19 @@ class NNUEModelSparse(nn.Module):
         Returns:
             Position evaluation in centipawns [batch_size, 1]
         """
-        # Infer batch size from indices
-        batch_size = int(white_indices[0].max().item()) + 1
+        # Infer batch size from indices if not provided
+        if batch_size is None:
+            inferred_batch = -1
+            if white_indices.numel() > 0:
+                inferred_batch = max(inferred_batch, int(white_indices[0].max().item()))
+            if black_indices.numel() > 0:
+                inferred_batch = max(inferred_batch, int(black_indices[0].max().item()))
+            if inferred_batch < 0:
+                raise ValueError(
+                    "Unable to infer batch size from empty sparse indices. "
+                    "Please provide batch_size."
+                )
+            batch_size = inferred_batch + 1
 
         # Transform features from both perspectives using sparse operations
         w = self.crelu(self.ft(white_indices, white_values, batch_size))
@@ -361,7 +373,7 @@ class NNUEModelSparse(nn.Module):
                 flip_sign = 1
 
             # Forward pass
-            score = self.forward(white_indices, white_values, black_indices, black_values)
+            score = self.forward(white_indices, white_values, black_indices, black_values, batch_size=1)
 
             if flip_sign == -1:
                 score = -score
