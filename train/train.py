@@ -195,6 +195,7 @@ def save_checkpoint(
     upload_threads: Optional[List[threading.Thread]] = None,
     scheduler: Optional[torch.optim.lr_scheduler.LRScheduler] = None,
     best_val_loss: Optional[float] = None,
+    training_start_time: Optional[str] = None,
 ) -> None:
     """
     Save model checkpoint
@@ -211,6 +212,7 @@ def save_checkpoint(
         upload_threads: Optional list to track upload threads (for cleanup)
         scheduler: Optional scheduler whose state should be checkpointed
         best_val_loss: Best validation loss observed so far
+        training_start_time: ISO format timestamp when training started
     """
     checkpoint = {
         'epoch': epoch,
@@ -224,6 +226,8 @@ def save_checkpoint(
         checkpoint['scheduler_state_dict'] = scheduler.state_dict()
     if best_val_loss is not None:
         checkpoint['best_val_loss'] = best_val_loss
+    if training_start_time is not None:
+        checkpoint['training_start_time'] = training_start_time
 
     filepath = os.path.join(config.checkpoint_dir, filename)
     torch.save(checkpoint, filepath)
@@ -243,6 +247,7 @@ def save_checkpoint(
                     checkpoint_path=filepath,
                     config=config,
                     model_config=model_config,
+                    training_start_time=training_start_time,
                 )
                 print(f"[Background] Upload of {filename} completed!")
             except Exception as e:
@@ -262,7 +267,7 @@ def load_checkpoint(
     checkpoint_path: str,
     map_location: Optional[torch.device] = None,
     scheduler: Optional[torch.optim.lr_scheduler.LRScheduler] = None,
-) -> Tuple[int, float]:
+) -> Tuple[int, float, Optional[str]]:
     """
     Load model checkpoint
 
@@ -274,7 +279,7 @@ def load_checkpoint(
         scheduler: Optional scheduler to restore
 
     Returns:
-        Tuple of (start_epoch, best_val_loss)
+        Tuple of (start_epoch, best_val_loss, training_start_time)
     """
     checkpoint = torch.load(checkpoint_path, map_location=map_location)
     model.load_state_dict(checkpoint['model_state_dict'])
@@ -285,6 +290,7 @@ def load_checkpoint(
     start_epoch = checkpoint['epoch'] + 1
     stored_val_loss = checkpoint.get('val_loss')
     best_val_loss = checkpoint.get('best_val_loss', float('inf'))
+    training_start_time = checkpoint.get('training_start_time')
 
     print(f"Loaded checkpoint from epoch {checkpoint['epoch']}")
     print(f"Training loss: {checkpoint['train_loss']:.4f}")
@@ -294,7 +300,7 @@ def load_checkpoint(
     if best_val_loss != float('inf'):
         print(f"Best validation loss so far: {best_val_loss:.4f}")
 
-    return start_epoch, best_val_loss
+    return start_epoch, best_val_loss, training_start_time
 
 
 def ensure_data_exists(config: TrainingConfig) -> bool:
@@ -440,9 +446,10 @@ def train(config: TrainingConfig) -> Tuple[torch.nn.Module, Dict[str, list]]:
 
     start_epoch = 0
     best_val_loss = float('inf')
+    training_start_time = None
 
     if config.resume_from:
-        start_epoch, best_val_loss = load_checkpoint(
+        start_epoch, best_val_loss, training_start_time = load_checkpoint(
             model,
             optimizer,
             config.resume_from,
@@ -453,6 +460,11 @@ def train(config: TrainingConfig) -> Tuple[torch.nn.Module, Dict[str, list]]:
     # Training loop
     print(f"\nStarting training for {config.num_epochs} epochs...")
     print("=" * 80)
+
+    # Track training start time if not resuming from checkpoint
+    from datetime import datetime
+    if training_start_time is None:
+        training_start_time = datetime.now().isoformat()
 
     training_history = {
         'train_loss': [],
@@ -493,16 +505,16 @@ def train(config: TrainingConfig) -> Tuple[torch.nn.Module, Dict[str, list]]:
                 best_val_loss = val_loss
                 improved = True
 
-        # Save best checkpoint whenever validation improves
+        # Save best checkpoint whenever validation improves (don't upload during training)
         if improved:
             save_checkpoint(
                 model, optimizer, epoch, train_loss, val_loss,
-                config, 'best_model.pt', upload_to_hf=True,
+                config, 'best_model.pt', upload_to_hf=False,
                 upload_threads=upload_threads, scheduler=scheduler,
-                best_val_loss=best_val_loss,
+                best_val_loss=best_val_loss, training_start_time=training_start_time,
             )
 
-        # Save regular checkpoint
+        # Save regular checkpoint (upload every N epochs)
         save_regular = (epoch + 1) % config.save_every_n_epochs == 0
         if save_regular and (not config.save_best_only or not has_validation):
             save_checkpoint(
@@ -510,6 +522,7 @@ def train(config: TrainingConfig) -> Tuple[torch.nn.Module, Dict[str, list]]:
                 config, f'checkpoint_epoch_{epoch+1}.pt',
                 upload_to_hf=True, upload_threads=upload_threads,
                 scheduler=scheduler, best_val_loss=best_val_loss,
+                training_start_time=training_start_time,
             )
 
         # Update learning rate
@@ -535,28 +548,57 @@ def train(config: TrainingConfig) -> Tuple[torch.nn.Module, Dict[str, list]]:
                 best_val_loss = final_val_loss
                 final_improved = True
 
+        # Update best model if final validation improved
         if final_improved:
             save_checkpoint(
                 model, optimizer, config.num_epochs - 1, last_train_loss, final_val_loss,
-                config, 'best_model.pt', upload_to_hf=True,
+                config, 'best_model.pt', upload_to_hf=False,
                 upload_threads=upload_threads, scheduler=scheduler,
-                best_val_loss=best_val_loss,
+                best_val_loss=best_val_loss, training_start_time=training_start_time,
             )
 
-        # Ensure last epoch checkpoint is saved
+        # Upload best model at the end (regardless of whether it was just updated)
+        if has_validation and best_val_loss < float('inf'):
+            best_model_path = os.path.join(config.checkpoint_dir, 'best_model.pt')
+            if os.path.exists(best_model_path):
+                print("\nUploading best model to Hugging Face...")
+                def upload_best_model():
+                    try:
+                        model_config = {
+                            'hidden_size': config.hidden_size,
+                            'hidden2_size': config.hidden2_size,
+                            'hidden3_size': config.hidden3_size,
+                        }
+                        upload_model_to_hf(
+                            checkpoint_path=best_model_path,
+                            config=config,
+                            model_config=model_config,
+                            training_start_time=training_start_time,
+                        )
+                        print("[Background] Best model upload completed!")
+                    except Exception as e:
+                        print(f"[Background] Warning: Failed to upload best model to Hugging Face: {e}")
+                
+                thread = threading.Thread(target=upload_best_model, daemon=False)
+                thread.start()
+                upload_threads.append(thread)
+                print("Started background upload for best model (training continues...)")
+
+        # Ensure last epoch checkpoint is saved (don't upload - only upload every N epochs)
         save_checkpoint(
             model, optimizer, config.num_epochs - 1, last_train_loss, final_val_loss,
             config, f'checkpoint_epoch_{config.num_epochs}.pt',
-            upload_to_hf=True, upload_threads=upload_threads,
+            upload_to_hf=False, upload_threads=upload_threads,
             scheduler=scheduler, best_val_loss=best_val_loss,
+            training_start_time=training_start_time,
         )
 
-        # Save final model snapshot
+        # Save final model snapshot (don't upload - best model already uploaded)
         save_checkpoint(
             model, optimizer, config.num_epochs - 1, last_train_loss, final_val_loss,
-            config, 'final_model.pt', upload_to_hf=True,
+            config, 'final_model.pt', upload_to_hf=False,
             upload_threads=upload_threads, scheduler=scheduler,
-            best_val_loss=best_val_loss,
+            best_val_loss=best_val_loss, training_start_time=training_start_time,
         )
 
     print("\nTraining complete!")

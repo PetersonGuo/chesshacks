@@ -7,7 +7,7 @@ import json
 import torch
 from datetime import datetime
 from typing import Optional, Dict, Any, Tuple
-from huggingface_hub import HfApi, upload_folder, create_repo, login, get_token
+from huggingface_hub import HfApi, upload_folder, login, get_token
 
 from .config import TrainingConfig, get_config
 from .model import HalfKP
@@ -154,6 +154,7 @@ def load_checkpoint_info(checkpoint_path: str) -> Dict[str, Any]:
         'train_loss': checkpoint.get('train_loss', None),
         'val_loss': checkpoint.get('val_loss', None),
         'config': checkpoint.get('config', None),
+        'training_start_time': checkpoint.get('training_start_time', None),
     }
 
 
@@ -214,6 +215,7 @@ def prepare_model_for_upload(
         'epoch': checkpoint.get('epoch', None),
         'train_loss': checkpoint.get('train_loss', None),
         'val_loss': checkpoint.get('val_loss', None),
+        'training_start_time': checkpoint.get('training_start_time', None),
     }
     
     training_config = checkpoint.get('config', {})
@@ -232,6 +234,7 @@ def upload_model_to_hf(
     upload_all_checkpoints: Optional[bool] = None,
     checkpoints_dir: Optional[str] = None,
     config: Optional[TrainingConfig] = None,
+    training_start_time: Optional[str] = None,
 ) -> str:
     """
     Upload model to Hugging Face Hub
@@ -247,6 +250,7 @@ def upload_model_to_hf(
         upload_all_checkpoints: If True, upload all checkpoint files (defaults to config.hf_upload_all_checkpoints)
         checkpoints_dir: Directory containing checkpoints (defaults to config.hf_checkpoints_dir or checkpoint directory)
         config: TrainingConfig instance (if None, uses default config)
+        training_start_time: ISO format timestamp when training started (will be extracted from checkpoint if not provided)
     
     Returns:
         URL of the uploaded model
@@ -287,6 +291,10 @@ def upload_model_to_hf(
             checkpoint_path, temp_dir, model_config
         )
         
+        # Use provided training_start_time if available, otherwise try to get from checkpoint
+        if training_start_time is None:
+            training_start_time = checkpoint_info.get('training_start_time')
+        
         # Copy checkpoint file(s) to upload directory
         checkpoint_filename = os.path.basename(checkpoint_path)
         checkpoint_dest = os.path.join(temp_dir, checkpoint_filename)
@@ -322,12 +330,31 @@ def upload_model_to_hf(
         with open(os.path.join(temp_dir, 'README.md'), 'w') as f:
             f.write(card_content)
         
-        # Create repository if it doesn't exist
+        # Check if repository exists, throw error if it doesn't
         api = HfApi()
         try:
-            create_repo(repo_id=repo_id, private=private, exist_ok=True)
+            api.repo_info(repo_id=repo_id, repo_type="model")
         except Exception as e:
-            print(f"Note: {e}")
+            raise ValueError(
+                f"Repository '{repo_id}' does not exist. Please create it first on Hugging Face Hub.\n"
+                f"Error: {e}"
+            )
+        
+        # Create commit message with epoch and training start time
+        epoch = checkpoint_info.get('epoch', 'N/A')
+        epoch_display = epoch + 1 if isinstance(epoch, int) else epoch
+        
+        if training_start_time:
+            try:
+                # Parse ISO format and format nicely
+                from datetime import datetime
+                start_dt = datetime.fromisoformat(training_start_time.replace('Z', '+00:00'))
+                start_time_str = start_dt.strftime("%Y-%m-%d %H:%M:%S")
+            except Exception:
+                start_time_str = training_start_time
+            commit_message = f"Epoch {epoch_display} - Training started: {start_time_str}"
+        else:
+            commit_message = f"Epoch {epoch_display}"
         
         # Upload files
         print(f"Uploading to {repo_id}...")
@@ -335,6 +362,7 @@ def upload_model_to_hf(
             folder_path=temp_dir,
             repo_id=repo_id,
             repo_type="model",
+            commit_message=commit_message,
         )
         
         model_url = f"https://huggingface.co/{repo_id}"
