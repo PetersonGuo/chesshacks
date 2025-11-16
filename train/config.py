@@ -19,9 +19,10 @@ class TrainingConfig:
     # Training parameters
     batch_size: int = 256
     learning_rate: float = 0.003  # Higher LR for faster initial learning (was 0.001)
-    num_epochs: int = 300
+    num_epochs: int = 50  # Reduced from 300 - with ~89k positions, 50 epochs is more appropriate
     weight_decay: float = 1e-5
     max_grad_norm: Optional[float] = 1.0  # Gradient clipping to prevent explosion (None = disabled)
+    early_stopping_patience: Optional[int] = 10  # Stop if val loss doesn't improve for N epochs (None = disabled)
 
     # Model architecture
     hidden_size: int = 256
@@ -52,7 +53,7 @@ class TrainingConfig:
     scheduler_gamma: float = 0.1  # for StepLR
     
     # Warmup
-    warmup_epochs: int = 100  # Number of epochs for learning rate warmup (0 = no warmup)
+    warmup_epochs: int = 5  # Number of epochs for learning rate warmup (0 = no warmup) - reduced for 50 total epochs
     warmup_start_lr: Optional[float] = 1e-5  # Starting learning rate for warmup (None = 0.0, recommended: 1e-5 to 1e-4)
 
     # Loss function

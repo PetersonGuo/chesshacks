@@ -576,6 +576,9 @@ def train(config: TrainingConfig) -> Tuple[torch.nn.Module, Dict[str, list]]:
 
     last_val_loss: Optional[float] = None
     last_train_loss: Optional[float] = None
+    
+    # Early stopping tracking
+    epochs_without_improvement = 0
 
     # Initialize learning rate for first epoch if warmup is enabled and starting from beginning
     if scheduler is not None and config.warmup_epochs > 0 and start_epoch == 0:
@@ -611,6 +614,15 @@ def train(config: TrainingConfig) -> Tuple[torch.nn.Module, Dict[str, list]]:
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
                 improved = True
+                epochs_without_improvement = 0
+            else:
+                epochs_without_improvement += 1
+            
+            # Early stopping check
+            if config.early_stopping_patience is not None and epochs_without_improvement >= config.early_stopping_patience:
+                print(f"\nEarly stopping triggered! No improvement for {config.early_stopping_patience} epochs.")
+                print(f"Best validation loss: {best_val_loss:.4f}")
+                break
 
         # Save best checkpoint whenever validation improves (don't upload during training)
         if improved:
