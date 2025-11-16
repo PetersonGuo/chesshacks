@@ -80,8 +80,9 @@ pip install nanobind
 
 ## Notes
 
-- **No CMake needed!** The build system finds nanobind by importing it and compiles it from source if needed
-- If a pre-built nanobind static library (`libnanobind-static.a`) exists, it will be used (faster build)
-- If no pre-built library exists, nanobind source files are compiled directly with setuptools
+- **No CMake needed!** The build system finds nanobind by importing it and compiles it from source
+- **By default, nanobind is always compiled from source** to ensure compatibility across different Python versions and platforms
+- For faster local builds, you can use a pre-built library by setting `USE_NANOBIND_PREBUILT=1` environment variable (only if you're sure it's compatible)
 - All compilation is done with standard C++ compilers (g++, clang++, etc.) - no build system dependencies
+- This approach ensures the build works reliably on Linux, macOS, and Windows with any Python version
 

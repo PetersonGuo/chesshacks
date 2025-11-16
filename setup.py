@@ -261,18 +261,23 @@ python_include = sysconfig.get_path('include')
 include_dirs.append(python_include)
 
 # Create extension - include nanobind sources directly (NO CMake needed!)
-# First check if we should use pre-built library or compile from source
-nanobind_lib = find_nanobind_library()
-if nanobind_lib:
-    # Use pre-built static library if available
-    print(f"Using pre-built nanobind static library: {nanobind_lib}")
-    ext_sources = cpp_sources
-    extra_objects = [nanobind_lib]
-else:
-    # Compile nanobind from source - pure Python build!
-    print("Compiling nanobind from source (no CMake needed)")
-    ext_sources = cpp_sources + nanobind_sources
-    extra_objects = []
+# Always compile nanobind from source for maximum compatibility across platforms
+# This ensures the library is built with the same compiler flags and Python version
+print("Compiling nanobind from source (no CMake needed)")
+print("This ensures compatibility across different Python versions and platforms")
+ext_sources = cpp_sources + nanobind_sources
+extra_objects = []
+
+# Optional: Allow using pre-built library via environment variable for faster builds
+# Set USE_NANOBIND_PREBUILT=1 to use pre-built library if available
+if os.getenv('USE_NANOBIND_PREBUILT', '').lower() in ('1', 'true', 'yes'):
+    nanobind_lib = find_nanobind_library()
+    if nanobind_lib:
+        print(f"Using pre-built nanobind static library: {nanobind_lib}")
+        ext_sources = cpp_sources
+        extra_objects = [nanobind_lib]
+    else:
+        print("Pre-built library requested but not found, compiling from source")
 
 ext = Extension(
     'c_helpers',
