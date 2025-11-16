@@ -1,17 +1,17 @@
 #ifndef MOVE_ORDERING_H
 #define MOVE_ORDERING_H
 
-#include <string>
-#include <unordered_map>
+#include <array>
+#include <cstdint>
 
 const int MAX_DEPTH = 64; // Maximum search depth for killer moves
 
 // Killer moves table (stores 2 killer moves per ply)
 struct KillerMoves {
-  std::string killers[MAX_DEPTH][2];
+  std::array<std::array<uint16_t, 2>, MAX_DEPTH> killers{};
 
-  void store(int ply, const std::string &move_fen);
-  bool is_killer(int ply, const std::string &move_fen) const;
+  void store(int ply, uint16_t move);
+  bool is_killer(int ply, uint16_t move) const;
   void clear();
 };
 
@@ -32,17 +32,13 @@ private:
 // Tracks which move was best in response to opponent's last move
 class CounterMoveTable {
 public:
-  void store(int piece, int to_square, const std::string &counter_move_fen);
-  std::string get_counter(int piece, int to_square) const;
+  void store(int piece, int to_square, uint16_t counter_move);
+  uint16_t get_counter(int piece, int to_square) const;
   void clear();
 
 private:
-  // [piece_type + 6][to_square] -> counter move FEN
-  std::unordered_map<std::string, std::string> counters;
-
-  std::string make_key(int piece, int to_square) const {
-    return std::to_string(piece) + "_" + std::to_string(to_square);
-  }
+  // [piece_type + 6][to_square] -> counter move (encoded)
+  std::array<std::array<uint16_t, 64>, 13> counters{};
 };
 
 // Continuation history table (tracks two-move patterns)

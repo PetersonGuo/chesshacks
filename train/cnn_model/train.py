@@ -11,6 +11,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
+from torch.cuda.amp import autocast, GradScaler
 from tqdm import tqdm
 import threading
 from typing import List, Optional, Tuple, Dict
@@ -33,7 +34,7 @@ except ImportError:
     from train.upload_to_hf import upload_model_to_hf
 
 
-class ChessBoardDataset(Dataset):
+class BitboardDataset(Dataset):
     """
     PyTorch Dataset for chess positions with evaluations using board tensor representation
     
@@ -165,7 +166,7 @@ def create_dataloaders(train_path: str, val_path: Optional[str] = None,
         prefetch_factor = 16 if num_workers > 0 else None  # Higher for CUDA
     
     # Create training dataset
-    train_dataset = ChessBoardDataset(train_path, max_positions=max_train_positions,
+    train_dataset = BitboardDataset(train_path, max_positions=max_train_positions,
                                      score_min=score_min, score_max=score_max,
                                      normalize=normalize)
     train_loader = DataLoader(
@@ -183,7 +184,7 @@ def create_dataloaders(train_path: str, val_path: Optional[str] = None,
     val_loader = None
     if val_path:
         # Use same normalization stats from training set
-        val_dataset = ChessBoardDataset(val_path, max_positions=max_val_positions,
+        val_dataset = BitboardDataset(val_path, max_positions=max_val_positions,
                                        score_min=score_min, score_max=score_max,
                                        normalize=False)  # Don't recompute stats, will use train stats
         if normalize and hasattr(train_dataset, 'eval_mean'):
@@ -349,7 +350,8 @@ def get_loss_function(config: TrainingConfig) -> torch.nn.Module:
 
 def train_epoch(model: torch.nn.Module, train_loader: torch.utils.data.DataLoader,
                 optimizer: torch.optim.Optimizer, criterion: torch.nn.Module,
-                device: torch.device, config: TrainingConfig, epoch: int) -> float:
+                device: torch.device, config: TrainingConfig, epoch: int,
+                scaler: Optional[GradScaler] = None) -> float:
     """
     Train for one epoch
 
@@ -361,6 +363,7 @@ def train_epoch(model: torch.nn.Module, train_loader: torch.utils.data.DataLoade
         device: Device to train on
         config: Training configuration
         epoch: Current epoch number
+        scaler: Optional GradScaler for mixed precision training
 
     Returns:
         Average training loss for the epoch
@@ -368,6 +371,9 @@ def train_epoch(model: torch.nn.Module, train_loader: torch.utils.data.DataLoade
     model.train()
     total_loss = 0.0
     num_batches = len(train_loader)
+    
+    # Check if using mixed precision
+    use_amp = scaler is not None and device.type == 'cuda'
 
     # Progress bar
     pbar = tqdm(train_loader, desc=f'Epoch {epoch+1}/{config.num_epochs}',
@@ -385,19 +391,36 @@ def train_epoch(model: torch.nn.Module, train_loader: torch.utils.data.DataLoade
         # Zero gradients
         optimizer.zero_grad()
 
-        # Forward pass
-        outputs = model(board_tensors)
-        loss = criterion(outputs, targets)
+        # Forward pass with optional mixed precision
+        if use_amp:
+            with autocast():
+                outputs = model(board_tensors)
+                loss = criterion(outputs, targets)
+        else:
+            outputs = model(board_tensors)
+            loss = criterion(outputs, targets)
 
         # Backward pass
-        loss.backward()
-
-        # Gradient clipping
-        if config.max_grad_norm is not None:
-            torch.nn.utils.clip_grad_norm_(model.parameters(), config.max_grad_norm)
-
-        # Optimizer step
-        optimizer.step()
+        if use_amp:
+            scaler.scale(loss).backward()
+            
+            # Gradient clipping (unscale first for mixed precision)
+            if config.max_grad_norm is not None:
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), config.max_grad_norm)
+            
+            # Optimizer step with scaler
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            loss.backward()
+            
+            # Gradient clipping
+            if config.max_grad_norm is not None:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), config.max_grad_norm)
+            
+            # Optimizer step
+            optimizer.step()
 
         # Track loss
         total_loss += loss.item()
@@ -719,6 +742,12 @@ def train(config: TrainingConfig) -> Tuple[torch.nn.Module, Dict[str, list]]:
 
     # Loss function
     criterion = get_loss_function(config)
+    
+    # Create GradScaler for mixed precision training (only for CUDA)
+    scaler = None
+    if device.type == 'cuda' and getattr(config, 'use_amp', True):  # Default to True for CUDA
+        scaler = GradScaler()
+        print("Mixed precision training enabled (AMP)")
 
     start_epoch = 0
     best_val_loss = float('inf')
@@ -777,7 +806,7 @@ def train(config: TrainingConfig) -> Tuple[torch.nn.Module, Dict[str, list]]:
     for epoch in range(start_epoch, config.num_epochs):
         # Train
         train_loss = train_epoch(
-            model, train_loader, optimizer, criterion, device, config, epoch
+            model, train_loader, optimizer, criterion, device, config, epoch, scaler
         )
         training_history['train_loss'].append(train_loss)
         last_train_loss = train_loss

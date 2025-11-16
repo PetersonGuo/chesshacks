@@ -9,3 +9,5 @@ build
 train/data
 train/checkpoints
 CMakeFiles/
+data
+checkpoints

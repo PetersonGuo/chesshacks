@@ -4,29 +4,29 @@
 // KILLER MOVES IMPLEMENTATION
 // ============================================================================
 
-void KillerMoves::store(int ply, const std::string &move_fen) {
+void KillerMoves::store(int ply, uint16_t move) {
   if (ply >= MAX_DEPTH)
     return;
 
   // Don't store duplicates
-  if (killers[ply][0] == move_fen)
+  if (killers[ply][0] == move)
     return;
 
   // Shift: second killer becomes first, new move becomes second
   killers[ply][1] = killers[ply][0];
-  killers[ply][0] = move_fen;
+  killers[ply][0] = move;
 }
 
-bool KillerMoves::is_killer(int ply, const std::string &move_fen) const {
+bool KillerMoves::is_killer(int ply, uint16_t move) const {
   if (ply >= MAX_DEPTH)
     return false;
-  return killers[ply][0] == move_fen || killers[ply][1] == move_fen;
+  return killers[ply][0] == move || killers[ply][1] == move;
 }
 
 void KillerMoves::clear() {
   for (int i = 0; i < MAX_DEPTH; i++) {
-    killers[i][0] = "";
-    killers[i][1] = "";
+    killers[i][0] = 0;
+    killers[i][1] = 0;
   }
 }
 
@@ -81,21 +81,25 @@ void HistoryTable::age() {
 // ============================================================================
 
 void CounterMoveTable::store(int piece, int to_square,
-                             const std::string &counter_move_fen) {
-  std::string key = make_key(piece, to_square);
-  counters[key] = counter_move_fen;
+                             uint16_t counter_move) {
+  int idx = piece + 6;
+  if (idx < 0 || idx >= 13 || to_square < 0 || to_square >= 64)
+    return;
+  counters[idx][to_square] = counter_move;
 }
 
-std::string CounterMoveTable::get_counter(int piece, int to_square) const {
-  std::string key = make_key(piece, to_square);
-  auto it = counters.find(key);
-  if (it != counters.end()) {
-    return it->second;
+uint16_t CounterMoveTable::get_counter(int piece, int to_square) const {
+  int idx = piece + 6;
+  if (idx < 0 || idx >= 13 || to_square < 0 || to_square >= 64)
+    return 0;
+  return counters[idx][to_square];
+}
+
+void CounterMoveTable::clear() {
+  for (auto &row : counters) {
+    row.fill(0);
   }
-  return "";
 }
-
-void CounterMoveTable::clear() { counters.clear(); }
 
 // ============================================================================
 // CONTINUATION HISTORY IMPLEMENTATION

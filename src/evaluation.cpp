@@ -2,10 +2,10 @@
 #include <algorithm>
 #include <climits>
 #include <cmath>
+#include <iostream>
+#include <memory>
 #include <thread>
 #include <vector>
-#include <memory>
-#include <iostream>
 
 const int MIN = INT_MIN;
 const int MAX = INT_MAX;
@@ -97,10 +97,7 @@ int get_piece_value(Piece piece) {
   return piece_values[abs_piece];
 }
 
-int evaluate_with_pst(const std::string &fen) {
-  ChessBoard board;
-  board.from_fen(fen);
-
+int evaluate_with_pst(const bitboard::BitboardState &board) {
   int score = 0;
 
   // Evaluate all pieces on the board
@@ -124,7 +121,61 @@ int evaluate_with_pst(const std::string &fen) {
   return score;
 }
 
-int mvv_lva_score(const ChessBoard &board, const Move &move) {
+int evaluate_with_pst(const std::string &fen) {
+  bitboard::BitboardState board;
+  board.from_fen(fen);
+  return evaluate_with_pst(board);
+}
+
+int evaluate_material(const bitboard::BitboardState &board) {
+  int score = 0;
+  for (int square = 0; square < 64; ++square) {
+    Piece piece = board.get_piece_at(square);
+    switch (piece) {
+    case W_PAWN:
+      score += 100;
+      break;
+    case W_KNIGHT:
+      score += 320;
+      break;
+    case W_BISHOP:
+      score += 330;
+      break;
+    case W_ROOK:
+      score += 500;
+      break;
+    case W_QUEEN:
+      score += 900;
+      break;
+    case B_PAWN:
+      score -= 100;
+      break;
+    case B_KNIGHT:
+      score -= 320;
+      break;
+    case B_BISHOP:
+      score -= 330;
+      break;
+    case B_ROOK:
+      score -= 500;
+      break;
+    case B_QUEEN:
+      score -= 900;
+      break;
+    default:
+      break;
+    }
+  }
+  return score;
+}
+
+int evaluate_material(const std::string &fen) {
+  bitboard::BitboardState board;
+  board.from_fen(fen);
+  return evaluate_material(board);
+}
+
+int mvv_lva_score(const bitboard::BitboardState &board, const Move &move) {
   Piece victim = board.get_piece_at(move.to);
   if (victim == EMPTY)
     return 0;
@@ -138,7 +189,7 @@ int mvv_lva_score(const ChessBoard &board, const Move &move) {
 // STATIC EXCHANGE EVALUATION (SEE)
 // ============================================================================
 
-int static_exchange_eval(ChessBoard &board, const Move &move) {
+int static_exchange_eval(bitboard::BitboardState &board, const Move &move) {
   // Get piece values
   auto get_value = [](Piece p) -> int {
     int abs_p = abs(p);
@@ -189,20 +240,20 @@ int static_exchange_eval(ChessBoard &board, const Move &move) {
 // ============================================================================
 
 std::vector<int> batch_evaluate_mt(const std::vector<std::string> &fens,
-                                    int num_threads) {
+                                   int num_threads) {
   std::vector<int> scores(fens.size());
-  
+
   if (fens.empty()) {
     return scores;
   }
-  
+
   // Auto-detect threads
   if (num_threads == 0) {
     num_threads = std::thread::hardware_concurrency();
     if (num_threads == 0)
       num_threads = 4;
   }
-  
+
   // For small batches, use single thread
   if (fens.size() < static_cast<size_t>(num_threads) || num_threads == 1) {
     for (size_t i = 0; i < fens.size(); i++) {
@@ -210,17 +261,17 @@ std::vector<int> batch_evaluate_mt(const std::vector<std::string> &fens,
     }
     return scores;
   }
-  
+
   // Divide work among threads
   std::vector<std::thread> threads;
   size_t chunk_size = (fens.size() + num_threads - 1) / num_threads;
-  
+
   auto evaluate_chunk = [&](size_t start, size_t end) {
     for (size_t i = start; i < end && i < fens.size(); i++) {
       scores[i] = evaluate_with_pst(fens[i]);
     }
   };
-  
+
   for (int t = 0; t < num_threads; t++) {
     size_t start = t * chunk_size;
     size_t end = std::min(start + chunk_size, fens.size());
@@ -228,11 +279,11 @@ std::vector<int> batch_evaluate_mt(const std::vector<std::string> &fens,
       threads.emplace_back(evaluate_chunk, start, end);
     }
   }
-  
+
   for (auto &thread : threads) {
     thread.join();
   }
-  
+
   return scores;
 }
 
@@ -240,41 +291,29 @@ std::vector<int> batch_evaluate_mt(const std::vector<std::string> &fens,
 // MOVE ORDERING
 // ============================================================================
 
-void order_moves(ChessBoard &board, std::vector<Move> &moves,
-                 TranspositionTable *tt, const std::string &fen,
-                 KillerMoves *killers, int ply, HistoryTable *history,
-                 CounterMoveTable *counters, int prev_piece, int prev_to,
+void order_moves(bitboard::BitboardState &board, std::vector<Move> &moves,
+                 uint16_t tt_best_move, KillerMoves *killers, int ply,
+                 HistoryTable *history, CounterMoveTable *counters,
+                 int prev_piece, int prev_to,
                  ContinuationHistory *cont_history) {
   std::vector<std::pair<Move, int>> scored_moves;
   scored_moves.reserve(moves.size());
-
-  // Get best move from TT if available
-  std::string tt_best_move = "";
-  if (tt) {
-    int dummy_score;
-    tt->probe(fen, 0, MIN, MAX, dummy_score, tt_best_move);
-  }
 
   for (const Move &move : moves) {
     int score = 0;
 
     Piece moving_piece = board.get_piece_at(move.from);
-    // Check if this is the TT best move (highest priority)
-    board.make_move(move);
-    std::string move_fen = board.to_fen();
-    board.unmake_move(move);
-
-    if (!tt_best_move.empty() && move_fen == tt_best_move) {
+    if (tt_best_move != 0 && move.encoded == tt_best_move) {
       score = 1000000; // TT move gets highest priority
     } else if (move.promotion != EMPTY) {
       // Promotions (prioritize queen promotions)
       score = 900000 + get_piece_value(move.promotion);
-    } else if (killers && killers->is_killer(ply, move_fen)) {
+    } else if (killers && killers->is_killer(ply, move.encoded)) {
       // Killer moves (good quiet moves from sibling nodes)
       score = 850000;
     } else if (counters && prev_to >= 0) {
-      std::string counter = counters->get_counter(prev_piece, prev_to);
-      if (!counter.empty() && counter == move_fen) {
+      uint16_t counter = counters->get_counter(prev_piece, prev_to);
+      if (counter != 0 && counter == move.encoded) {
         score = 830000;
       }
     } else if (board.is_capture(move)) {
@@ -301,8 +340,8 @@ void order_moves(ChessBoard &board, std::vector<Move> &moves,
         score = 10000 - static_cast<int>(center_dist * 1000);
       }
       if (cont_history && prev_to >= 0) {
-        score += cont_history->get_score(prev_piece, prev_to, moving_piece,
-                                         move.to);
+        score +=
+            cont_history->get_score(prev_piece, prev_to, moving_piece, move.to);
       }
     }
 
@@ -324,7 +363,7 @@ void order_moves(ChessBoard &board, std::vector<Move> &moves,
 // NNUE EVALUATION
 // ============================================================================
 
-bool init_nnue(const std::string& model_path) {
+bool init_nnue(const std::string &model_path) {
   try {
     g_nnue_evaluator = std::make_unique<NNUEEvaluator>();
     bool success = g_nnue_evaluator->load_model(model_path);
@@ -336,7 +375,7 @@ bool init_nnue(const std::string& model_path) {
 
     std::cout << "NNUE evaluator initialized successfully" << std::endl;
     return true;
-  } catch (const std::exception& e) {
+  } catch (const std::exception &e) {
     std::cerr << "Error initializing NNUE: " << e.what() << std::endl;
     g_nnue_evaluator.reset();
     return false;
@@ -347,34 +386,36 @@ bool is_nnue_loaded() {
   return g_nnue_evaluator != nullptr && g_nnue_evaluator->is_loaded();
 }
 
-int evaluate_nnue(const std::string& fen) {
+int evaluate_nnue(const std::string &fen) {
   if (!is_nnue_loaded()) {
-    std::cerr << "Warning: NNUE not loaded, falling back to PST evaluation" << std::endl;
+    std::cerr << "Warning: NNUE not loaded, falling back to PST evaluation"
+              << std::endl;
     return evaluate_with_pst(fen);
   }
 
   return g_nnue_evaluator->evaluate(fen);
 }
 
-int evaluate_nnue(const ChessBoard& board) {
+int evaluate_nnue(const bitboard::BitboardState &board) {
   if (!is_nnue_loaded()) {
-    std::cerr << "Warning: NNUE not loaded, falling back to PST evaluation" << std::endl;
-    return evaluate_with_pst(board.to_fen());
+    std::cerr << "Warning: NNUE not loaded, falling back to PST evaluation"
+              << std::endl;
+    return evaluate_with_pst(board);
   }
 
   return g_nnue_evaluator->evaluate(board);
 }
 
-int evaluate(const std::string& fen) {
+int evaluate(const std::string &fen) {
   if (is_nnue_loaded()) {
     return evaluate_nnue(fen);
   }
   return evaluate_with_pst(fen);
 }
 
-int evaluate(const ChessBoard& board) {
+int evaluate(const bitboard::BitboardState &board) {
   if (is_nnue_loaded()) {
     return evaluate_nnue(board);
   }
-  return evaluate_with_pst(board.to_fen());
+  return evaluate_with_pst(board);
 }

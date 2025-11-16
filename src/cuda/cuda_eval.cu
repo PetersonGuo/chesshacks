@@ -1,4 +1,4 @@
-#include "../chess_board.h"
+#include "../bitboard/bitboard_state.h"
 #include "../evaluation.h"
 #include "cuda_eval.h"
 #include <algorithm>

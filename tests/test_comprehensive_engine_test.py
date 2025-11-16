@@ -187,13 +187,6 @@ class TestAdvancedFeatures:
             ), f"Line {i}: Invalid UCI move {line.uci_move}"
             assert hasattr(line, "score"), f"Line {i}: Missing score"
 
-    def test_opening_book_api(self):
-        """Test Opening Book API is accessible."""
-        book = c_helpers.OpeningBook()
-        assert book is not None
-        assert hasattr(book, "is_loaded"), "OpeningBook missing is_loaded method"
-
-
 class TestFeatureChecklist:
     """Verify all 23 features are present."""
 
@@ -209,7 +202,6 @@ class TestFeatureChecklist:
             "HistoryTable",
             "CounterMoveTable",
             "multi_pv_search",
-            "OpeningBook",
             "find_best_move",
             "get_best_move_uci",
         ]

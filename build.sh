@@ -6,6 +6,10 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD_DIR="$SCRIPT_DIR/build"
+USER_LOCAL_BIN="$HOME/.local/bin"
+if [[ -d "$USER_LOCAL_BIN" ]] && [[ ":$PATH:" != *":$USER_LOCAL_BIN:"* ]]; then
+    export PATH="$USER_LOCAL_BIN:$PATH"
+fi
 
 # Detect number of CPU cores
 if command -v nproc &>/dev/null; then
@@ -31,6 +35,45 @@ cd "$SCRIPT_DIR"
 if [[ -z "${PYTHON_BIN:-}" ]]; then
     PYTHON_BIN=$(command -v python3)
 fi
+
+ensure_tool_via_pip() {
+    local cmd="$1"
+    local pkg="$2"
+    if command -v "$cmd" >/dev/null 2>&1; then
+        return
+    fi
+    echo "Installing $cmd via pip (--user) (package: $pkg)..."
+    if "$PYTHON_BIN" -m pip install --user "$pkg"; then
+        hash -r
+        if ! command -v "$cmd" >/dev/null 2>&1; then
+            echo "ERROR: $cmd still not available after installing $pkg via pip" >&2
+            exit 1
+        fi
+    else
+        echo "ERROR: Failed to install $pkg via pip" >&2
+        exit 1
+    fi
+}
+
+ensure_clang_toolchain() {
+    if command -v clang >/dev/null 2>&1 && command -v clang++ >/dev/null 2>&1; then
+        return
+    fi
+    for pkg in clang-llvm clang; do
+        echo "Attempting to install clang toolchain via pip package '$pkg'..."
+        if "$PYTHON_BIN" -m pip install --user "$pkg"; then
+            hash -r
+            if command -v clang >/dev/null 2>&1 && command -v clang++ >/dev/null 2>&1; then
+                return
+            fi
+        fi
+    done
+    echo "ERROR: Unable to install clang toolchain via pip (--user)." >&2
+    exit 1
+}
+
+ensure_tool_via_pip "cmake" "cmake"
+ensure_clang_toolchain
 
 PYTHON_ROOT=$("$PYTHON_BIN" -c "import sys, pathlib; print(pathlib.Path(sys.executable).parent.parent)")
 PYTHON_INCLUDE=$("$PYTHON_BIN" -c "import sysconfig; print(sysconfig.get_path('include'))")
@@ -76,6 +119,27 @@ echo "Using Python interpreter: $PYTHON_BIN"
 echo "Python library: $PYTHON_LIBRARY"
 echo ""
 
+if command -v clang >/dev/null 2>&1 && command -v clang++ >/dev/null 2>&1; then
+    C_COMPILER="clang"
+    CXX_COMPILER="clang++"
+    COMPILER_DESC="Clang"
+else
+    C_COMPILER="gcc"
+    CXX_COMPILER="g++"
+    COMPILER_DESC="GCC"
+fi
+echo "Selected C compiler: $C_COMPILER ($COMPILER_DESC preference)"
+echo "Selected C++ compiler: $CXX_COMPILER"
+
+if command -v ninja >/dev/null 2>&1; then
+    CMAKE_GENERATOR="Ninja"
+    echo "Build generator: Ninja"
+else
+    CMAKE_GENERATOR="Unix Makefiles"
+    echo "Build generator: Unix Makefiles (make fallback)"
+fi
+echo ""
+
 echo "Installing Python dependencies from requirements.txt..."
 # Check if we're in a virtual environment
 if [[ -z "${VIRTUAL_ENV:-}" ]]; then
@@ -104,11 +168,22 @@ if [[ "${1:-}" == "clean" ]]; then
     echo ""
 fi
 
+if [[ -f "$BUILD_DIR/CMakeCache.txt" ]]; then
+    CURRENT_GENERATOR=$(grep -m1 "^CMAKE_GENERATOR:" "$BUILD_DIR/CMakeCache.txt" | cut -d= -f2)
+    if [[ "$CURRENT_GENERATOR" != "$CMAKE_GENERATOR" ]]; then
+        echo "Generator changed ($CURRENT_GENERATOR -> $CMAKE_GENERATOR); clearing build directory..."
+        rm -rf "$BUILD_DIR"
+    fi
+fi
+
 mkdir -p "$BUILD_DIR"
 cd "$BUILD_DIR"
 
 echo "Configuring CMake..."
 cmake -S "$SCRIPT_DIR" -B . \
+      -G "$CMAKE_GENERATOR" \
+      -DCMAKE_C_COMPILER="$C_COMPILER" \
+      -DCMAKE_CXX_COMPILER="$CXX_COMPILER" \
       -DCMAKE_BUILD_TYPE=Release \
       -DPython3_EXECUTABLE="$PYTHON_BIN" \
       -DPython3_ROOT_DIR="$PYTHON_ROOT" \

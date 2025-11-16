@@ -14,24 +14,37 @@ sys.path.insert(0, build_dir)
 
 import c_helpers
 
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        value = int(os.getenv(name, default))
+        return value if value > 0 else default
+    except (TypeError, ValueError):
+        return default
+
+
+MAX_DEPTH = _env_int("CHESSHACKS_MAX_DEPTH", 5)
+c_helpers.set_max_search_depth(MAX_DEPTH)
+
 def benchmark_search(fen, depth, num_threads, name):
     """Benchmark search with specified number of threads."""
     tt = c_helpers.TranspositionTable()
     killer = c_helpers.KillerMoves()
     history = c_helpers.HistoryTable()
+    counters = c_helpers.CounterMoveTable()
     
     start = time.time()
-    score = c_helpers.alpha_beta_optimized(
+    score = c_helpers.alpha_beta_optimized_builtin(
         fen,
         depth,
         c_helpers.MIN,
         c_helpers.MAX,
         True,
-        c_helpers.evaluate_with_pst,
         tt,
         num_threads,
         killer,
         history,
+        counters,
     )
     elapsed = time.time() - start
     
@@ -98,7 +111,10 @@ def main():
         ("Tactical position", "r2qkb1r/ppp2ppp/2n5/3np1B1/2BPP1b1/2P2N2/PP3PPP/RN1Q1RK1 w kq - 0 9"),
     ]
     
-    depths = [4, 5, 6]
+    depth_candidates = [4, 5, 6]
+    depths = [d for d in depth_candidates if d <= MAX_DEPTH]
+    if not depths:
+        depths = [MAX_DEPTH]
     thread_counts = [1, 0]  # 1 = single-threaded, 0 = auto-detect all threads
     
     import threading
@@ -111,6 +127,7 @@ def main():
     
     print(f"\nSystem has {max_threads} CPU cores available")
     print(f"Testing with 1 thread (sequential) and {max_threads} threads (parallel)\n")
+    print(f"Depths benchmarked: {depths} (use CHESSHACKS_MAX_DEPTH to adjust)\n")
     
     for pos_name, fen in positions:
         print("\n" + "="*80)

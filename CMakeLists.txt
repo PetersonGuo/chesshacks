@@ -86,17 +86,18 @@ find_package(nanobind CONFIG REQUIRED)
 
 # Add the source directory to include paths
 include_directories(${CMAKE_SOURCE_DIR}/src)
+include_directories(${CMAKE_SOURCE_DIR}/third_party/virgo)
 
 # Source files
 set(SOURCE_FILES
     src/bindings.cpp
-    src/chess_board.cpp
     src/move_ordering.cpp
     src/transposition_table.cpp
     src/evaluation.cpp
     src/nnue_evaluator.cpp
-    src/opening_book.cpp
     src/search_and_utils.cpp
+    src/virgo_instantiations.cpp
+    src/bitboard/bitboard_state.cpp
 )
 
 # Add CUDA files if CUDA is enabled

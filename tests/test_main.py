@@ -11,6 +11,14 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import c_helpers
 
 
+def _env_int(name: str, default: int) -> int:
+    try:
+        value = int(os.getenv(name, default))
+        return value if value > 0 else default
+    except (TypeError, ValueError):
+        return default
+
+
 # Detect CUDA (same as in main.py)
 def has_cuda():
     """Check if CUDA is available on this system"""
@@ -26,7 +34,9 @@ def has_cuda():
 
 
 USE_CUDA = has_cuda()
-SEARCH_DEPTH = 4
+SEARCH_DEPTH = _env_int("CHESSHACKS_MAX_DEPTH", 4)
+MAX_DEPTH = SEARCH_DEPTH
+c_helpers.set_max_search_depth(MAX_DEPTH)
 NUM_THREADS = 0
 
 # Create transposition table
@@ -41,29 +51,6 @@ print(f"Threads: {NUM_THREADS if NUM_THREADS > 0 else 'auto'}")
 print()
 
 
-def nnue_evaluate(fen: str) -> int:
-    """Simple material count evaluation"""
-    piece_values = {
-        "P": 100,
-        "N": 320,
-        "B": 330,
-        "R": 500,
-        "Q": 900,
-        "K": 0,
-        "p": -100,
-        "n": -320,
-        "b": -330,
-        "r": -500,
-        "q": -900,
-        "k": 0,
-    }
-    score = 0
-    for char in fen.split()[0]:
-        if char in piece_values:
-            score += piece_values[char]
-    return score
-
-
 def search_position(fen: str, depth: int = SEARCH_DEPTH) -> int:
     """Search a position using the best available engine"""
     if USE_CUDA:
@@ -73,17 +60,16 @@ def search_position(fen: str, depth: int = SEARCH_DEPTH) -> int:
             c_helpers.MIN,
             c_helpers.MAX,
             True,
-            nnue_evaluate,
+            c_helpers.evaluate_material,
             transposition_table,
         )
     else:
-        return c_helpers.alpha_beta_optimized(
+        return c_helpers.alpha_beta_optimized_builtin(
             fen,
             depth,
             c_helpers.MIN,
             c_helpers.MAX,
             True,
-            nnue_evaluate,
             transposition_table,
             NUM_THREADS,
         )

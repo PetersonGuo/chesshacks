@@ -1,22 +1,22 @@
 #include "transposition_table.h"
 
-void TranspositionTable::store(const std::string &fen, int depth, int score,
-                               TTEntryType type,
-                               const std::string &best_move_fen) {
-  std::lock_guard<std::mutex> lock(mutex);
+void TranspositionTable::store(uint64_t key, int depth, int score,
+                               TTEntryType type, uint16_t best_move) {
+  TableShard &shard = get_shard(key);
+  std::lock_guard<std::mutex> lock(shard.mutex);
   // Only store if this is a deeper search or doesn't exist
-  auto it = table.find(fen);
-  if (it == table.end() || it->second.depth <= depth) {
-    table[fen] = {depth, score, type, best_move_fen};
+  auto it = shard.table.find(key);
+  if (it == shard.table.end() || it->second.depth <= depth) {
+    shard.table[key] = {depth, score, type, best_move};
   }
 }
 
-bool TranspositionTable::probe(const std::string &fen, int depth, int alpha,
-                               int beta, int &score,
-                               std::string &best_move_fen) {
-  std::lock_guard<std::mutex> lock(mutex);
-  auto it = table.find(fen);
-  if (it == table.end()) {
+bool TranspositionTable::probe(uint64_t key, int depth, int alpha, int beta,
+                               int &score, uint16_t &best_move) {
+  const TableShard &shard = get_shard(key);
+  std::lock_guard<std::mutex> lock(shard.mutex);
+  auto it = shard.table.find(key);
+  if (it == shard.table.end()) {
     return false;
   }
 
@@ -28,7 +28,7 @@ bool TranspositionTable::probe(const std::string &fen, int depth, int alpha,
   }
 
   // Return best move for move ordering
-  best_move_fen = entry.best_move_fen;
+  best_move = entry.best_move;
 
   // Check if we can use this cached value
   if (entry.type == EXACT) {
@@ -46,20 +46,27 @@ bool TranspositionTable::probe(const std::string &fen, int depth, int alpha,
 }
 
 void TranspositionTable::clear() {
-  std::lock_guard<std::mutex> lock(mutex);
-  table.clear();
+  for (auto &shard : shards) {
+    std::lock_guard<std::mutex> lock(shard.mutex);
+    shard.table.clear();
+  }
 }
 
 size_t TranspositionTable::size() const {
-  std::lock_guard<std::mutex> lock(mutex);
-  return table.size();
+  size_t total = 0;
+  for (const auto &shard : shards) {
+    std::lock_guard<std::mutex> lock(shard.mutex);
+    total += shard.table.size();
+  }
+  return total;
 }
 
-std::string TranspositionTable::get_best_move(const std::string &fen) const {
-  std::lock_guard<std::mutex> lock(mutex);
-  auto it = table.find(fen);
-  if (it == table.end()) {
-    return "";
+uint16_t TranspositionTable::get_best_move(uint64_t key) const {
+  const TableShard &shard = get_shard(key);
+  std::lock_guard<std::mutex> lock(shard.mutex);
+  auto it = shard.table.find(key);
+  if (it == shard.table.end()) {
+    return 0;
   }
-  return it->second.best_move_fen;
+  return it->second.best_move;
 }

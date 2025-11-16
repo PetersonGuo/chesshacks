@@ -1,4 +1,4 @@
-#include "chess_board.h"
+#include "bitboard/bitboard_state.h"
 #include "evaluation.h"
 #include "search.h"
 #include "utils.h"
@@ -6,7 +6,9 @@
 #include "cuda/cuda_utils.h"
 #endif
 #include <algorithm>
+#include <atomic>
 #include <cctype>
+#include <functional>
 #include <future>
 #include <iostream>
 #include <nanobind/nanobind.h>
@@ -17,38 +19,74 @@
 #include <vector>
 
 namespace nb = nanobind;
+using bitboard::BitboardState;
 
-// ============================================================================
-// HELPER: Safe evaluate call with GIL handling
-// ============================================================================
+namespace {
+constexpr int kDefaultMaxDepth = 5;
+std::atomic<int> g_max_search_depth{kDefaultMaxDepth};
 
-// Wrapper to safely call Python evaluate callback with GIL
-// This ensures the GIL is held when calling Python callbacks from C++ threads
-// Note: gil_scoped_acquire is reference-counted and safe to use even if GIL is already held
-inline int safe_evaluate(const std::function<int(const std::string &)> &evaluate,
-                         const std::string &fen) {
-  // Acquire GIL before calling Python callback
-  // This is safe even if GIL is already held (nanobind uses reference counting)
-  nb::gil_scoped_acquire gil;
-  
-  // Call the Python callback with exception handling
-  // If the callback raises an exception, convert it to a C++ exception
-  try {
-    return evaluate(fen);
-  } catch (const nb::python_error &e) {
-    // Python exception occurred - convert to error message
-    std::cerr << "Error in Python evaluate callback: " << e.what() << std::endl;
-    // Return a neutral score on error
-    return 0;
-  } catch (const std::exception &e) {
-    // C++ exception occurred
-    std::cerr << "Error in evaluate callback: " << e.what() << std::endl;
-    return 0;
-  } catch (...) {
-    // Unknown exception
-    std::cerr << "Unknown error in evaluate callback" << std::endl;
-    return 0;
+inline int enforce_depth_limit(int depth) {
+  int limit = g_max_search_depth.load(std::memory_order_relaxed);
+  if (limit > 0 && depth > limit)
+    return limit;
+  return depth;
+}
+} // namespace
+
+void set_max_search_depth(int depth) {
+  if (depth <= 0)
+    depth = kDefaultMaxDepth;
+  g_max_search_depth.store(depth, std::memory_order_relaxed);
+}
+
+struct EvalProvider {
+  std::function<int(const std::string &)> fen_eval;
+  std::function<int(const BitboardState &)> board_eval;
+  bool use_python = true;
+
+  int operator()(const std::string &fen) const {
+    if (use_python) {
+      nb::gil_scoped_acquire gil;
+      return fen_eval(fen);
+    }
+    return fen_eval(fen);
   }
+
+  int operator()(const BitboardState &board) const {
+    if (board_eval) {
+      return board_eval(board);
+    }
+    if (use_python) {
+      nb::gil_scoped_acquire gil;
+      return fen_eval(board.to_fen());
+    }
+    return fen_eval(board.to_fen());
+  }
+};
+
+static EvalProvider
+MakeEvalProvider(const std::function<int(const std::string &)> &evaluate,
+                 bool default_python) {
+  EvalProvider provider;
+  provider.fen_eval = evaluate;
+  provider.use_python = default_python;
+
+  using FenEvalPtr = int (*)(const std::string &);
+  if (auto fn_ptr = evaluate.template target<FenEvalPtr>()) {
+    if (*fn_ptr == static_cast<FenEvalPtr>(&evaluate_with_pst)) {
+      provider.board_eval = [](const BitboardState &board) {
+        return evaluate_with_pst(board);
+      };
+      provider.use_python = false;
+    } else if (*fn_ptr == static_cast<FenEvalPtr>(&evaluate_material)) {
+      provider.board_eval = [](const BitboardState &board) {
+        return evaluate_material(board);
+      };
+      provider.use_python = false;
+    }
+  }
+
+  return provider;
 }
 
 // ============================================================================
@@ -56,18 +94,16 @@ inline int safe_evaluate(const std::function<int(const std::string &)> &evaluate
 // ============================================================================
 
 // Quiescence search to avoid horizon effect (only search captures)
-int quiescence_search(ChessBoard &board, int alpha, int beta,
-                      bool maximizingPlayer,
-                      const std::function<int(const std::string &)> &evaluate,
-                      int q_depth, int max_q_depth) {
+int quiescence_search(BitboardState &board, int alpha, int beta,
+                      bool maximizingPlayer, const EvalProvider &evaluate,
+                      int q_depth = 0, int max_q_depth = 2) {
   // Limit quiescence depth to prevent infinite recursion
   if (q_depth >= max_q_depth) {
-    return safe_evaluate(evaluate, board.to_fen());
+    return evaluate(board);
   }
 
   // Stand-pat evaluation
-  std::string fen = board.to_fen();
-  int stand_pat = safe_evaluate(evaluate, fen);
+  int stand_pat = evaluate(board);
 
   if (maximizingPlayer) {
     if (stand_pat >= beta) {
@@ -135,14 +171,13 @@ int quiescence_search(ChessBoard &board, int alpha, int beta,
 // ============================================================================
 // 1. BASIC VERSION - Bare bones alpha-beta pruning, no optimizations
 // ============================================================================
-int alpha_beta_basic(const std::string &fen, int depth, int alpha, int beta,
-                     bool maximizingPlayer,
-                     const std::function<int(const std::string &)> &evaluate) {
+static int alpha_beta_basic_board(BitboardState &board, int depth, int alpha,
+                                  int beta, bool maximizingPlayer,
+                                  const EvalProvider &evaluate) {
   if (depth == 0) {
-    return safe_evaluate(evaluate, fen);
+    return evaluate(board);
   }
 
-  ChessBoard board(fen);
   std::vector<Move> legal_moves = board.generate_legal_moves();
 
   if (legal_moves.empty()) {
@@ -158,9 +193,8 @@ int alpha_beta_basic(const std::string &fen, int depth, int alpha, int beta,
     for (const Move &move : legal_moves) {
       Piece singular_piece = board.get_piece_at(move.from);
       board.make_move(move);
-      std::string child_fen = board.to_fen();
-      int eval =
-          alpha_beta_basic(child_fen, depth - 1, alpha, beta, false, evaluate);
+      int eval = alpha_beta_basic_board(board, depth - 1, alpha, beta, false,
+                                        evaluate);
       board.unmake_move(move);
 
       maxEval = std::max(maxEval, eval);
@@ -175,9 +209,8 @@ int alpha_beta_basic(const std::string &fen, int depth, int alpha, int beta,
     for (const Move &move : legal_moves) {
       Piece singular_piece = board.get_piece_at(move.from);
       board.make_move(move);
-      std::string child_fen = board.to_fen();
       int eval =
-          alpha_beta_basic(child_fen, depth - 1, alpha, beta, true, evaluate);
+          alpha_beta_basic_board(board, depth - 1, alpha, beta, true, evaluate);
       board.unmake_move(move);
 
       minEval = std::min(minEval, eval);
@@ -188,6 +221,59 @@ int alpha_beta_basic(const std::string &fen, int depth, int alpha, int beta,
     }
     return minEval;
   }
+}
+
+static int alpha_beta_basic_internal(BitboardState board, int depth, int alpha,
+                                     int beta, bool maximizingPlayer,
+                                     const EvalProvider &evaluate) {
+  return alpha_beta_basic_board(board, depth, alpha, beta, maximizingPlayer,
+                                evaluate);
+}
+
+static int alpha_beta_basic_internal(const std::string &fen, int depth,
+                                     int alpha, int beta, bool maximizingPlayer,
+                                     const EvalProvider &evaluate) {
+  BitboardState board(fen);
+  return alpha_beta_basic_internal(board, depth, alpha, beta, maximizingPlayer,
+                                   evaluate);
+}
+
+int alpha_beta_basic(const std::string &fen, int depth, int alpha, int beta,
+                     bool maximizingPlayer,
+                     const std::function<int(const std::string &)> &evaluate) {
+  depth = enforce_depth_limit(depth);
+  EvalProvider eval_provider = MakeEvalProvider(evaluate, true);
+  return alpha_beta_basic_internal(fen, depth, alpha, beta, maximizingPlayer,
+                                   eval_provider);
+}
+
+int alpha_beta_basic(BitboardState board, int depth, int alpha, int beta,
+                     bool maximizingPlayer,
+                     const std::function<int(const std::string &)> &evaluate) {
+  depth = enforce_depth_limit(depth);
+  EvalProvider eval_provider = MakeEvalProvider(evaluate, true);
+  return alpha_beta_basic_internal(board, depth, alpha, beta, maximizingPlayer,
+                                   eval_provider);
+}
+
+int alpha_beta_basic_builtin(const std::string &fen, int depth, int alpha,
+                             int beta, bool maximizingPlayer) {
+  depth = enforce_depth_limit(depth);
+  std::function<int(const std::string &)> material_eval_fn =
+      static_cast<int (*)(const std::string &)>(&evaluate_material);
+  EvalProvider eval_provider = MakeEvalProvider(material_eval_fn, false);
+  return alpha_beta_basic_internal(fen, depth, alpha, beta, maximizingPlayer,
+                                   eval_provider);
+}
+
+int alpha_beta_basic_builtin(BitboardState board, int depth, int alpha,
+                             int beta, bool maximizingPlayer) {
+  depth = enforce_depth_limit(depth);
+  std::function<int(const std::string &)> material_eval_fn =
+      static_cast<int (*)(const std::string &)>(&evaluate_material);
+  EvalProvider eval_provider = MakeEvalProvider(material_eval_fn, false);
+  return alpha_beta_basic_internal(board, depth, alpha, beta, maximizingPlayer,
+                                   eval_provider);
 }
 
 // ============================================================================
@@ -201,49 +287,23 @@ int alpha_beta_basic(const std::string &fen, int depth, int alpha, int beta,
 // ============================================================================
 
 static int alpha_beta_internal(
-    const std::string &fen, int depth, int alpha, int beta,
-    bool maximizingPlayer,
-    const std::function<int(const std::string &)> &evaluate,
-    TranspositionTable &tt, bool use_quiescence = true,
-    KillerMoves *killers = nullptr, int ply = 0,
-    HistoryTable *history = nullptr, bool allow_null_move = true,
+    BitboardState &board, int depth, int alpha, int beta, bool maximizingPlayer,
+    const EvalProvider &evaluate, TranspositionTable &tt,
+    bool use_quiescence = true, KillerMoves *killers = nullptr, int ply = 0,
+    HistoryTable *history = nullptr, bool allow_null_move = false,
     CounterMoveTable *counters = nullptr,
     ContinuationHistory *cont_history = nullptr, int prev_piece = 0,
     int prev_to = -1) {
-  // Check transposition table
+  const uint64_t board_key = board.zobrist();
   int cached_score;
-  std::string tt_best_move;
-  if (tt.probe(fen, depth, alpha, beta, cached_score, tt_best_move)) {
+  uint16_t tt_best_move = 0;
+  if (tt.probe(board_key, depth, alpha, beta, cached_score, tt_best_move)) {
     return cached_score;
-  }
-
-  ChessBoard board(fen);
-
-  // Null move pruning (skip if in check or zugzwang-prone position)
-  if (allow_null_move && depth >= 3 && !board.is_check()) {
-    // Check if we're not in an endgame (simple heuristic: need enough material)
-    std::vector<Move> all_moves = board.generate_legal_moves();
-    if (all_moves.size() > 3) { // Not in severe endgame
-      // Make null move (skip turn)
-      int R = 2; // Reduction factor
-      std::string null_fen =
-          fen; // Simplified: in real chess, would flip side to move
-
-      // Try shallow search with null move
-      int null_score = -alpha_beta_internal(
-          null_fen, depth - 1 - R, -beta, -beta + 1, !maximizingPlayer,
-          evaluate, tt, use_quiescence, killers, ply + 1, history, false,
-          counters, cont_history, prev_piece, prev_to);
-
-      if (null_score >= beta) {
-        return beta; // Null move cutoff
-      }
-    }
   }
 
   // Razoring - prune at low depths when evaluation is far below alpha
   if (!board.is_check() && depth <= 3 && depth > 0) {
-    int static_eval = safe_evaluate(evaluate, fen);
+    int static_eval = evaluate(board);
     int razor_margin = 300 * depth; // More aggressive at lower depths
 
     if (static_eval + razor_margin < alpha) {
@@ -263,11 +323,11 @@ static int alpha_beta_internal(
     if (use_quiescence) {
       int q_score =
           quiescence_search(board, alpha, beta, maximizingPlayer, evaluate);
-      tt.store(fen, 0, q_score, EXACT, "");
+      tt.store(board_key, 0, q_score, EXACT, 0);
       return q_score;
     } else {
-      int score = safe_evaluate(evaluate, fen);
-      tt.store(fen, 0, score, EXACT, "");
+      int score = evaluate(board);
+      tt.store(board_key, 0, score, EXACT, 0);
       return score;
     }
   }
@@ -282,28 +342,29 @@ static int alpha_beta_internal(
     } else {
       score = 0; // Stalemate
     }
-    tt.store(fen, depth, score, EXACT, "");
+    tt.store(board_key, depth, score, EXACT, 0);
     return score;
   }
 
   // Internal Iterative Deepening (IID)
   // If we don't have a TT move at high depths, do a shallow search to find one
-  if (tt_best_move.empty() && depth >= 5) {
+  if (tt_best_move == 0 && depth >= 5) {
     // Do a reduced depth search to populate TT with a best move
     int iid_depth = depth - 2;
-    alpha_beta_internal(fen, iid_depth, alpha, beta, maximizingPlayer, evaluate,
-                        tt, use_quiescence, killers, ply, history,
+    BitboardState iid_board = board;
+    alpha_beta_internal(iid_board, iid_depth, alpha, beta, maximizingPlayer,
+                        evaluate, tt, use_quiescence, killers, ply, history,
                         allow_null_move, counters, cont_history, prev_piece,
                         prev_to);
     // After this search, the TT should have a best move for this position
-    tt.probe(fen, iid_depth, alpha, beta, cached_score, tt_best_move);
+    tt.probe(board_key, iid_depth, alpha, beta, cached_score, tt_best_move);
   }
 
   // Singular Extensions
   // If we have a TT move and it appears significantly better than alternatives,
   // extend the search depth for this node
   int extension = 0;
-  if (!tt_best_move.empty() && depth >= 6) {
+  if (tt_best_move != 0 && depth >= 6) {
     // Perform a reduced search excluding the TT move
     // to see if any other move comes close
     int singular_beta = cached_score - depth * 2; // Margin for singularity
@@ -312,41 +373,15 @@ static int alpha_beta_internal(
     // Search all moves except the TT move with reduced depth
     int best_alternative = MIN;
     for (const Move &move : legal_moves) {
+      if (move.encoded == tt_best_move)
+        continue;
       Piece singular_piece = board.get_piece_at(move.from);
-      board.make_move(move);
-      std::string child_fen = board.to_fen();
-
-      // Skip the TT best move - we're testing if alternatives are worse
-      // Compare position without move clocks
-      auto last_space = child_fen.rfind(' ');
-      if (last_space != std::string::npos) {
-        last_space = child_fen.rfind(' ', last_space - 1);
-      }
-      std::string child_pos = (last_space != std::string::npos)
-                                  ? child_fen.substr(0, last_space)
-                                  : child_fen;
-
-      last_space = tt_best_move.rfind(' ');
-      if (last_space != std::string::npos) {
-        last_space = tt_best_move.rfind(' ', last_space - 1);
-      }
-      std::string tt_pos = (last_space != std::string::npos)
-                               ? tt_best_move.substr(0, last_space)
-                               : tt_best_move;
-
-      board.unmake_move(move);
-
-      if (child_pos == tt_pos) {
-        continue; // Skip the TT move
-      }
-
-      // Search alternative move
-      board.make_move(move);
+      BitboardState alt_board = board;
+      alt_board.make_move(move);
       int score = alpha_beta_internal(
-          child_fen, singular_depth, singular_beta - 1, singular_beta,
+          alt_board, singular_depth, singular_beta - 1, singular_beta,
           !maximizingPlayer, evaluate, tt, use_quiescence, killers, ply + 1,
           history, true, counters, cont_history, singular_piece, move.to);
-      board.unmake_move(move);
 
       best_alternative = std::max(best_alternative, score);
 
@@ -363,11 +398,11 @@ static int alpha_beta_internal(
   }
 
   // Move ordering with TT, killers, MVV-LVA, history, promotions
-  order_moves(board, legal_moves, &tt, fen, killers, ply, history, counters,
+  order_moves(board, legal_moves, tt_best_move, killers, ply, history, counters,
               prev_piece, prev_to, cont_history);
 
   int original_alpha = alpha;
-  std::string best_move_fen = "";
+  uint16_t best_move_code = 0;
   int moves_searched = 0;
 
   if (maximizingPlayer) {
@@ -379,20 +414,17 @@ static int alpha_beta_internal(
     int static_eval = 0;
 
     if (depth <= 6 && !board.is_check()) {
-      static_eval = safe_evaluate(evaluate, fen);
+      static_eval = evaluate(board);
       futility_margin = 100 + 50 * depth; // Depth 1: 150, Depth 6: 400
       use_futility = true;
     }
 
     for (const Move &move : legal_moves) {
       Piece moving_piece = board.get_piece_at(move.from);
-      board.make_move(move);
-      std::string child_fen = board.to_fen();
-
       bool is_capture = board.is_capture(move);
       bool is_promotion = (move.promotion != EMPTY);
       bool is_quiet = !is_capture && !is_promotion;
-
+      board.make_move(move);
       int eval;
 
       // Futility pruning - skip quiet moves that can't raise alpha
@@ -408,8 +440,8 @@ static int alpha_beta_internal(
                          bool new_maximizing,
                          bool new_allow_null_move = true) -> int {
         return alpha_beta_internal(
-            child_fen, new_depth, new_alpha, new_beta, new_maximizing, evaluate,
-            tt, use_quiescence, killers, ply + 1, history, new_allow_null_move,
+            board, new_depth, new_alpha, new_beta, new_maximizing, evaluate, tt,
+            use_quiescence, killers, ply + 1, history, new_allow_null_move,
             counters, cont_history, moving_piece, move.to);
       };
 
@@ -420,7 +452,8 @@ static int alpha_beta_internal(
         bool do_lmr = false;
         int reduction = 0;
 
-        if (depth >= 3 && moves_searched >= 4 && is_quiet && !board.is_check()) {
+        if (depth >= 3 && moves_searched >= 4 && is_quiet &&
+            !board.is_check()) {
           do_lmr = true;
           reduction = (moves_searched >= 8) ? 2 : 1;
         }
@@ -446,65 +479,65 @@ static int alpha_beta_internal(
       board.unmake_move(move);
       moves_searched++;
 
-      if (eval > maxEval) {
-        maxEval = eval;
-        best_move_fen = child_fen;
-        if (cont_history && prev_to >= 0 && is_quiet) {
-          cont_history->update(prev_piece, prev_to, moving_piece, move.to,
-                               depth);
-        }
-      }
-      alpha = std::max(alpha, eval);
-      if (beta <= alpha) {
+      if (eval >= beta) {
         if (killers && is_quiet) {
-          killers->store(ply, child_fen);
+          killers->store(ply, move.encoded);
         }
         if (history && is_quiet) {
           history->update(moving_piece, move.to, depth);
         }
         if (counters && prev_to >= 0) {
-          counters->store(prev_piece, prev_to, child_fen);
+          counters->store(prev_piece, prev_to, move.encoded);
         }
         if (cont_history && prev_to >= 0 && is_quiet) {
           cont_history->update(prev_piece, prev_to, moving_piece, move.to,
                                depth);
         }
-        break;
+        tt.store(board_key, depth, beta, LOWER_BOUND, move.encoded);
+        return beta;
       }
+
+      if (eval > maxEval) {
+        maxEval = eval;
+        best_move_code = move.encoded;
+        if (cont_history && prev_to >= 0 && is_quiet) {
+          cont_history->update(prev_piece, prev_to, moving_piece, move.to,
+                               depth);
+        }
+      }
+
+      alpha = std::max(alpha, eval);
     }
 
     // Store in transposition table with best move
     if (maxEval <= original_alpha) {
-      tt.store(fen, depth, maxEval, UPPER_BOUND, best_move_fen);
+      tt.store(board_key, depth, maxEval, UPPER_BOUND, best_move_code);
     } else if (maxEval >= beta) {
-      tt.store(fen, depth, maxEval, LOWER_BOUND, best_move_fen);
+      tt.store(board_key, depth, maxEval, LOWER_BOUND, best_move_code);
     } else {
-      tt.store(fen, depth, maxEval, EXACT, best_move_fen);
+      tt.store(board_key, depth, maxEval, EXACT, best_move_code);
     }
 
     return maxEval;
   } else {
     int minEval = MAX;
-    int moves_searched = 0;
 
     bool use_futility = false;
     int futility_margin = 0;
     int static_eval = 0;
 
     if (depth <= 6 && !board.is_check()) {
-      static_eval = safe_evaluate(evaluate, fen);
+      static_eval = evaluate(board);
       futility_margin = 100 + 50 * depth;
       use_futility = true;
     }
 
     for (const Move &move : legal_moves) {
       Piece moving_piece = board.get_piece_at(move.from);
-      board.make_move(move);
-      std::string child_fen = board.to_fen();
-
       bool is_capture = board.is_capture(move);
       bool is_promotion = (move.promotion != EMPTY);
       bool is_quiet = !is_capture && !is_promotion;
+      board.make_move(move);
 
       int eval;
 
@@ -520,8 +553,8 @@ static int alpha_beta_internal(
                          bool new_maximizing,
                          bool new_allow_null_move = true) -> int {
         return alpha_beta_internal(
-            child_fen, new_depth, new_alpha, new_beta, new_maximizing, evaluate,
-            tt, use_quiescence, killers, ply + 1, history, new_allow_null_move,
+            board, new_depth, new_alpha, new_beta, new_maximizing, evaluate, tt,
+            use_quiescence, killers, ply + 1, history, new_allow_null_move,
             counters, cont_history, moving_piece, move.to);
       };
 
@@ -531,7 +564,8 @@ static int alpha_beta_internal(
         bool do_lmr = false;
         int reduction = 0;
 
-        if (depth >= 3 && moves_searched >= 4 && is_quiet && !board.is_check()) {
+        if (depth >= 3 && moves_searched >= 4 && is_quiet &&
+            !board.is_check()) {
           do_lmr = true;
           reduction = (moves_searched >= 8) ? 2 : 1;
         }
@@ -557,58 +591,65 @@ static int alpha_beta_internal(
       board.unmake_move(move);
       moves_searched++;
 
-      if (eval < minEval) {
-        minEval = eval;
-        best_move_fen = child_fen;
-        if (cont_history && prev_to >= 0 && is_quiet) {
-          cont_history->update(prev_piece, prev_to, moving_piece, move.to,
-                               depth);
-        }
-      }
-      beta = std::min(beta, eval);
-      if (beta <= alpha) {
+      if (eval <= alpha) {
         if (killers && is_quiet) {
-          killers->store(ply, child_fen);
+          killers->store(ply, move.encoded);
         }
         if (history && is_quiet) {
           history->update(moving_piece, move.to, depth);
         }
         if (counters && prev_to >= 0) {
-          counters->store(prev_piece, prev_to, child_fen);
+          counters->store(prev_piece, prev_to, move.encoded);
         }
         if (cont_history && prev_to >= 0 && is_quiet) {
           cont_history->update(prev_piece, prev_to, moving_piece, move.to,
                                depth);
         }
-        break;
+        tt.store(board_key, depth, alpha, UPPER_BOUND, move.encoded);
+        return alpha;
       }
+
+      if (eval < minEval) {
+        minEval = eval;
+        best_move_code = move.encoded;
+        if (cont_history && prev_to >= 0 && is_quiet) {
+          cont_history->update(prev_piece, prev_to, moving_piece, move.to,
+                               depth);
+        }
+      }
+
+      beta = std::min(beta, eval);
     }
 
-    // Store in transposition table with best move
-    if (minEval <= alpha) {
-      tt.store(fen, depth, minEval, UPPER_BOUND, best_move_fen);
-    } else if (minEval >= beta) {
-      tt.store(fen, depth, minEval, LOWER_BOUND, best_move_fen);
+    if (minEval >= beta) {
+      tt.store(board_key, depth, minEval, LOWER_BOUND, best_move_code);
+    } else if (minEval <= original_alpha) {
+      tt.store(board_key, depth, minEval, UPPER_BOUND, best_move_code);
     } else {
-      tt.store(fen, depth, minEval, EXACT, best_move_fen);
+      tt.store(board_key, depth, minEval, EXACT, best_move_code);
     }
 
     return minEval;
   }
+
+  // Should never reach here
+  return maximizingPlayer ? alpha : beta;
 }
 
 // Iterative deepening wrapper with aspiration windows
-int iterative_deepening(
-    const std::string &fen, int max_depth, int alpha, int beta,
-    bool maximizingPlayer,
-    const std::function<int(const std::string &)> &evaluate,
-    TranspositionTable &tt, KillerMoves *killers, HistoryTable *history,
-    CounterMoveTable *counters, ContinuationHistory *cont_history) {
+int iterative_deepening(BitboardState &root_board, int max_depth, int alpha,
+                        int beta, bool maximizingPlayer,
+                        const EvalProvider &evaluate, TranspositionTable &tt,
+                        KillerMoves *killers, HistoryTable *history,
+                        CounterMoveTable *counters,
+                        ContinuationHistory *cont_history) {
+  max_depth = enforce_depth_limit(max_depth);
   int best_score = 0;
   const int ASPIRATION_WINDOW = 50; // Initial window size
 
   // Search with increasing depth
   for (int depth = 1; depth <= max_depth; depth++) {
+    BitboardState search_board = root_board;
     int current_alpha = alpha;
     int current_beta = beta;
 
@@ -626,17 +667,17 @@ int iterative_deepening(
 
     // Search with aspiration window
     int score =
-        alpha_beta_internal(fen, depth, current_alpha, current_beta,
+        alpha_beta_internal(search_board, depth, current_alpha, current_beta,
                             maximizingPlayer, evaluate, tt, true, killers, 0,
                             history, true, counters, cont_history, 0, -1);
 
     // If score falls outside window, re-search with full window
     if (depth >= 3 && (score <= current_alpha || score >= current_beta)) {
       // Failed low or high - re-search with full window
-      score =
-          alpha_beta_internal(fen, depth, alpha, beta, maximizingPlayer,
-                              evaluate, tt, true, killers, 0, history, true,
-                              counters, cont_history, 0, -1);
+      BitboardState retry_board = root_board;
+      score = alpha_beta_internal(
+          retry_board, depth, alpha, beta, maximizingPlayer, evaluate, tt, true,
+          killers, 0, history, true, counters, cont_history, 0, -1);
     }
 
     best_score = score;
@@ -651,12 +692,11 @@ int iterative_deepening(
 }
 
 // 2. OPTIMIZED: Full production version with all optimizations
-int alpha_beta_optimized(
-    const std::string &fen, int depth, int alpha, int beta,
-    bool maximizingPlayer,
-    const std::function<int(const std::string &)> &evaluate,
-    TranspositionTable *tt, int num_threads, KillerMoves *killers,
-    HistoryTable *history, CounterMoveTable *counters) {
+static int alpha_beta_optimized_impl(
+    BitboardState board, int depth, int alpha, int beta, bool maximizingPlayer,
+    const EvalProvider &evaluate, TranspositionTable *tt, int num_threads,
+    KillerMoves *killers, HistoryTable *history, CounterMoveTable *counters) {
+  depth = enforce_depth_limit(depth);
   TranspositionTable local_tt;
   TranspositionTable &tt_ref = tt ? *tt : local_tt;
 
@@ -670,28 +710,7 @@ int alpha_beta_optimized(
   CounterMoveTable *counters_ptr = counters ? counters : &local_counters;
   ContinuationHistory *cont_history_ptr = &local_cont_history;
 
-  // Auto-detect thread count if 0
-  if (num_threads == 0) {
-    num_threads = std::thread::hardware_concurrency();
-    if (num_threads == 0)
-      num_threads = 4;
-  }
-
-  // Use single-threaded for shallow depths or when explicitly requested
-  if (num_threads <= 1 || depth <= 2) {
-    return iterative_deepening(fen, depth, alpha, beta, maximizingPlayer,
-                               evaluate, tt_ref, killers_ptr, history_ptr,
-                               counters_ptr, cont_history_ptr);
-  }
-
-  // First do iterative deepening up to depth-1 to populate TT
-  if (depth > 1) {
-    iterative_deepening(fen, depth - 1, alpha, beta, maximizingPlayer, evaluate,
-                        tt_ref, killers_ptr, history_ptr, counters_ptr,
-                        cont_history_ptr);
-  }
-
-  ChessBoard board(fen);
+  const uint64_t root_key = board.zobrist();
   std::vector<Move> legal_moves = board.generate_legal_moves();
 
   if (legal_moves.empty()) {
@@ -702,8 +721,35 @@ int alpha_beta_optimized(
     }
   }
 
+  unsigned int hw_threads = std::max(1u, std::thread::hardware_concurrency());
+  int default_threads =
+      (hw_threads > 1) ? static_cast<int>(std::min(hw_threads, 4u)) : 1;
+
+  bool auto_threads = (num_threads <= 0);
+  int effective_threads =
+      auto_threads ? default_threads : std::max(1, std::min(num_threads, 64));
+  effective_threads =
+      std::min(effective_threads, static_cast<int>(legal_moves.size()));
+  const int original_alpha = alpha;
+  const int original_beta = beta;
+
+  if (effective_threads <= 1 || depth <= 2) {
+    return iterative_deepening(board, depth, alpha, beta, maximizingPlayer,
+                               evaluate, tt_ref, killers_ptr, history_ptr,
+                               counters_ptr, cont_history_ptr);
+  }
+
+  // First do iterative deepening up to depth-1 to populate TT
+  if (depth > 1) {
+    BitboardState prep_board = board;
+    iterative_deepening(prep_board, depth - 1, alpha, beta, maximizingPlayer,
+                        evaluate, tt_ref, killers_ptr, history_ptr,
+                        counters_ptr, cont_history_ptr);
+  }
+
   // Order root moves using TT, killer, history information
-  order_moves(board, legal_moves, &tt_ref, fen, killers_ptr, 0, history_ptr,
+  uint16_t root_tt_move = tt_ref.get_best_move(root_key);
+  order_moves(board, legal_moves, root_tt_move, killers_ptr, 0, history_ptr,
               counters_ptr, 0, -1, cont_history_ptr);
 
   struct MoveScore {
@@ -717,29 +763,19 @@ int alpha_beta_optimized(
   nb::gil_scoped_release gil_release;
 
   auto evaluate_move = [&](const Move &move) -> MoveScore {
-    ChessBoard local_board(fen);
+    BitboardState local_board = board;
     Piece moving_piece = local_board.get_piece_at(move.from);
     local_board.make_move(move);
-    std::string child_fen = local_board.to_fen();
 
+    KillerMoves thread_killers = *killers_ptr;
+    HistoryTable thread_history = *history_ptr;
     CounterMoveTable thread_counters;
     ContinuationHistory thread_cont_history;
 
-    int score;
-    {
-      nb::gil_scoped_acquire gil;
-      if (maximizingPlayer) {
-        score = alpha_beta_internal(
-            child_fen, depth - 1, alpha, beta, false, evaluate, tt_ref, true,
-            killers_ptr, 1, history_ptr, true, &thread_counters,
-            &thread_cont_history, moving_piece, move.to);
-      } else {
-        score = alpha_beta_internal(
-            child_fen, depth - 1, alpha, beta, true, evaluate, tt_ref, true,
-            killers_ptr, 1, history_ptr, true, &thread_counters,
-            &thread_cont_history, moving_piece, move.to);
-      }
-    }
+    int score = alpha_beta_internal(
+        local_board, depth - 1, alpha, beta, !maximizingPlayer, evaluate,
+        tt_ref, true, &thread_killers, 1, &thread_history, true,
+        &thread_counters, &thread_cont_history, moving_piece, move.to);
 
     return {move, score};
   };
@@ -747,10 +783,10 @@ int alpha_beta_optimized(
   // Launch threads for moves - batch processing for better efficiency
   std::vector<MoveScore> results;
   results.reserve(legal_moves.size());
-  
+
   for (size_t i = 0; i < legal_moves.size(); i++) {
     // Wait for a slot to become available
-    while (futures.size() >= static_cast<size_t>(num_threads)) {
+    while (futures.size() >= static_cast<size_t>(effective_threads)) {
       // Efficiently wait for any future to complete
       for (auto it = futures.begin(); it != futures.end();) {
         if (it->wait_for(std::chrono::microseconds(100)) ==
@@ -772,19 +808,95 @@ int alpha_beta_optimized(
     results.push_back(future.get());
   }
 
-  // Find best score
-  int best_score = maximizingPlayer ? MIN : MAX;
-  for (const auto &result : results) {
-    if (maximizingPlayer) {
-      best_score = std::max(best_score, result.score);
-      alpha = std::max(alpha, result.score);
-    } else {
-      best_score = std::min(best_score, result.score);
-      beta = std::min(beta, result.score);
-    }
+  if (results.empty()) {
+    return maximizingPlayer ? MIN : MAX;
   }
 
+  auto best_it =
+      maximizingPlayer
+          ? std::max_element(results.begin(), results.end(),
+                             [](const MoveScore &a, const MoveScore &b) {
+                               return a.score < b.score;
+                             })
+          : std::min_element(results.begin(), results.end(),
+                             [](const MoveScore &a, const MoveScore &b) {
+                               return a.score < b.score;
+                             });
+
+  int best_score = best_it->score;
+  uint16_t best_move_code = best_it->move.encoded;
+
+  TTEntryType entry_type = EXACT;
+  if (best_score <= original_alpha) {
+    entry_type = UPPER_BOUND;
+  } else if (best_score >= original_beta) {
+    entry_type = LOWER_BOUND;
+  }
+
+  tt_ref.store(root_key, depth, best_score, entry_type, best_move_code);
   return best_score;
+}
+
+static int alpha_beta_optimized_impl(const std::string &fen, int depth,
+                                     int alpha, int beta, bool maximizingPlayer,
+                                     const EvalProvider &evaluate,
+                                     TranspositionTable *tt, int num_threads,
+                                     KillerMoves *killers,
+                                     HistoryTable *history,
+                                     CounterMoveTable *counters) {
+  BitboardState board(fen);
+  return alpha_beta_optimized_impl(board, depth, alpha, beta, maximizingPlayer,
+                                   evaluate, tt, num_threads, killers, history,
+                                   counters);
+}
+
+int alpha_beta_optimized(
+    const std::string &fen, int depth, int alpha, int beta,
+    bool maximizingPlayer,
+    const std::function<int(const std::string &)> &evaluate,
+    TranspositionTable *tt, int num_threads, KillerMoves *killers,
+    HistoryTable *history, CounterMoveTable *counters) {
+  EvalProvider eval_provider = MakeEvalProvider(evaluate, true);
+  return alpha_beta_optimized_impl(fen, depth, alpha, beta, maximizingPlayer,
+                                   eval_provider, tt, num_threads, killers,
+                                   history, counters);
+}
+
+int alpha_beta_optimized(
+    BitboardState board, int depth, int alpha, int beta, bool maximizingPlayer,
+    const std::function<int(const std::string &)> &evaluate,
+    TranspositionTable *tt, int num_threads, KillerMoves *killers,
+    HistoryTable *history, CounterMoveTable *counters) {
+  EvalProvider eval_provider = MakeEvalProvider(evaluate, true);
+  return alpha_beta_optimized_impl(board, depth, alpha, beta, maximizingPlayer,
+                                   eval_provider, tt, num_threads, killers,
+                                   history, counters);
+}
+
+int alpha_beta_optimized_builtin(const std::string &fen, int depth, int alpha,
+                                 int beta, bool maximizingPlayer,
+                                 TranspositionTable *tt, int num_threads,
+                                 KillerMoves *killers, HistoryTable *history,
+                                 CounterMoveTable *counters) {
+  std::function<int(const std::string &)> native_eval =
+      static_cast<int (*)(const std::string &)>(&evaluate_material);
+  EvalProvider eval_provider = MakeEvalProvider(native_eval, false);
+  return alpha_beta_optimized_impl(fen, depth, alpha, beta, maximizingPlayer,
+                                   eval_provider, tt, num_threads, killers,
+                                   history, counters);
+}
+
+int alpha_beta_optimized_builtin(BitboardState board, int depth, int alpha,
+                                 int beta, bool maximizingPlayer,
+                                 TranspositionTable *tt, int num_threads,
+                                 KillerMoves *killers, HistoryTable *history,
+                                 CounterMoveTable *counters) {
+  std::function<int(const std::string &)> native_eval =
+      static_cast<int (*)(const std::string &)>(&evaluate_material);
+  EvalProvider eval_provider = MakeEvalProvider(native_eval, false);
+  return alpha_beta_optimized_impl(board, depth, alpha, beta, maximizingPlayer,
+                                   eval_provider, tt, num_threads, killers,
+                                   history, counters);
 }
 
 // ============================================================================
@@ -795,30 +907,38 @@ int alpha_beta_cuda(const std::string &fen, int depth, int alpha, int beta,
                     const std::function<int(const std::string &)> &evaluate,
                     TranspositionTable *tt, KillerMoves *killers,
                     HistoryTable *history, CounterMoveTable *counters) {
+  BitboardState board(fen);
+  return alpha_beta_cuda(board, depth, alpha, beta, maximizingPlayer, evaluate,
+                         tt, killers, history, counters);
+}
+
+int alpha_beta_cuda(BitboardState board, int depth, int alpha, int beta,
+                    bool maximizingPlayer,
+                    const std::function<int(const std::string &)> &evaluate,
+                    TranspositionTable *tt, KillerMoves *killers,
+                    HistoryTable *history, CounterMoveTable *counters) {
+  depth = enforce_depth_limit(depth);
 #ifdef CUDA_ENABLED
-  // If CUDA is available and compiled, use GPU-accelerated version
   if (is_cuda_available()) {
-    // Use the same alpha-beta algorithm but with GPU batch evaluation
-    // For positions with many child nodes, we can evaluate them all on GPU
-    // simultaneously
-    return alpha_beta_optimized(fen, depth, alpha, beta, maximizingPlayer,
+    return alpha_beta_optimized(board, depth, alpha, beta, maximizingPlayer,
                                 evaluate, tt, 0, killers, history, counters);
   }
 #endif
-
-  // Fall back to optimized CPU version if CUDA not available
-  return alpha_beta_optimized(fen, depth, alpha, beta, maximizingPlayer,
+  return alpha_beta_optimized(board, depth, alpha, beta, maximizingPlayer,
                               evaluate, tt, 0, killers, history, counters);
 }
 
 // ============================================================================
 // BEST MOVE FINDER - Returns the actual best move, not just score
 // ============================================================================
-std::string
-find_best_move(const std::string &fen, int depth,
-               const std::function<int(const std::string &)> &evaluate,
-               TranspositionTable *tt, int num_threads, KillerMoves *killers,
-               HistoryTable *history, CounterMoveTable *counters) {
+static std::string find_best_move_impl(BitboardState board, int depth,
+                                       const EvalProvider &evaluate,
+                                       TranspositionTable *tt, int num_threads,
+                                       KillerMoves *killers,
+                                       HistoryTable *history,
+                                       CounterMoveTable *counters,
+                                       uint16_t *best_move_code_out = nullptr) {
+  depth = enforce_depth_limit(depth);
   // Create local instances if not provided
   TranspositionTable local_tt;
   KillerMoves local_killers;
@@ -834,118 +954,185 @@ find_best_move(const std::string &fen, int depth,
   if (!counters)
     counters = &local_counters;
 
-  // Parse FEN to determine whos to move
-  ChessBoard board(fen);
+  const uint64_t root_key = board.zobrist();
   std::vector<Move> legal_moves = board.generate_legal_moves();
 
   if (legal_moves.empty()) {
     return ""; // No legal moves
   }
 
-  // Determine if maximizing (white to move)
-  bool maximizing = fen.find(" w ") != std::string::npos;
+  bool maximizing = board.white_to_move();
 
   // Run the search - this populates TT with best move
-  alpha_beta_optimized(fen, depth, MIN, MAX, maximizing, evaluate, tt,
-                       num_threads, killers, history, counters);
+  BitboardState search_board = board;
+  alpha_beta_optimized_impl(search_board, depth, MIN, MAX, maximizing, evaluate,
+                            tt, num_threads, killers, history, counters);
 
   // Get the best move FEN from TT
-  std::string best_move_fen = tt->get_best_move(fen);
+  uint16_t best_move_code = tt->get_best_move(root_key);
 
-  if (best_move_fen.empty()) {
-    // Fallback: evaluate each move and pick the best
-    std::string best = "";
-    int best_score = maximizing ? MIN : MAX;
-
-    // Parallelize fallback evaluation if num_threads > 1
-    if (num_threads > 1 && legal_moves.size() > 1) {
-      nb::gil_scoped_release gil_release;
-
-      struct MoveResult {
-        std::string fen;
-        int score;
-      };
-
-      std::vector<std::future<MoveResult>> futures;
-
-      auto evaluate_move = [&](const Move &move) -> MoveResult {
-        ChessBoard local_board(fen);
-        local_board.make_move(move);
-        std::string child_fen = local_board.to_fen();
-
-        int score;
-        {
-          nb::gil_scoped_acquire gil;
-          score =
-              alpha_beta_optimized(child_fen, depth - 1, MIN, MAX, !maximizing,
-                                   evaluate, tt, 0, killers, history);
-        }
-
-        return {child_fen, score};
-      };
-
-      int max_parallel = (num_threads == 0)
-                             ? std::thread::hardware_concurrency()
-                             : num_threads;
-      if (max_parallel == 0)
-        max_parallel = 4;
-
-      // Launch parallel evaluations
-      std::vector<MoveResult> results;
-      results.reserve(legal_moves.size());
-      
-      for (size_t i = 0; i < legal_moves.size(); i++) {
-        while (futures.size() >= static_cast<size_t>(max_parallel)) {
-          for (auto it = futures.begin(); it != futures.end();) {
-            if (it->wait_for(std::chrono::microseconds(100)) ==
-                std::future_status::ready) {
-              results.push_back(it->get());
-              it = futures.erase(it);
-            } else {
-              ++it;
-            }
-          }
-        }
-        futures.push_back(
-            std::async(std::launch::async, evaluate_move, legal_moves[i]));
-      }
-
-      // Collect remaining results
-      for (auto &future : futures) {
-        results.push_back(future.get());
-      }
-      
-      // Find best
-      for (const auto &result : results) {
-        if ((maximizing && result.score > best_score) ||
-            (!maximizing && result.score < best_score)) {
-          best_score = result.score;
-          best = result.fen;
-        }
-      }
-    } else {
-      // Sequential evaluation (original code)
-      for (const Move &move : legal_moves) {
-        board.make_move(move);
-        std::string child_fen = board.to_fen();
-
-        int score =
-            alpha_beta_optimized(child_fen, depth - 1, MIN, MAX, !maximizing,
-                                 evaluate, tt, 0, killers, history);
-
-        board.unmake_move(move);
-
-        if ((maximizing && score > best_score) ||
-            (!maximizing && score < best_score)) {
-          best_score = score;
-          best = child_fen;
-        }
-      }
-    }
-    return best;
+  if (best_move_code != 0) {
+    if (best_move_code_out)
+      *best_move_code_out = best_move_code;
+    Move move = board.decode_move(best_move_code);
+    board.make_move(move);
+    std::string result = board.to_fen();
+    board.unmake_move(move);
+    return result;
   }
 
-  return best_move_fen;
+  int best_score = maximizing ? MIN : MAX;
+  uint16_t fallback_best_code = 0;
+
+  if (num_threads > 1 && legal_moves.size() > 1) {
+    nb::gil_scoped_release gil_release;
+
+    struct MoveResult {
+      uint16_t encoded;
+      int score;
+    };
+
+    std::vector<std::future<MoveResult>> futures;
+    auto evaluate_move = [&](const Move &move) -> MoveResult {
+      BitboardState local_board = board;
+      Piece moving_piece = local_board.get_piece_at(move.from);
+      local_board.make_move(move);
+
+      KillerMoves thread_killers = *killers;
+      HistoryTable thread_history = *history;
+      CounterMoveTable thread_counters = *counters;
+      ContinuationHistory thread_cont_history;
+
+      int score = alpha_beta_internal(
+          local_board, depth - 1, MIN, MAX, !maximizing, evaluate, *tt, true,
+          &thread_killers, 1, &thread_history, true, &thread_counters,
+          &thread_cont_history, moving_piece, move.to);
+
+      return {move.encoded, score};
+    };
+
+    int max_parallel =
+        (num_threads == 0) ? std::thread::hardware_concurrency() : num_threads;
+    if (max_parallel == 0)
+      max_parallel = 4;
+
+    std::vector<MoveResult> results;
+    results.reserve(legal_moves.size());
+
+    for (size_t i = 0; i < legal_moves.size(); i++) {
+      while (futures.size() >= static_cast<size_t>(max_parallel)) {
+        for (auto it = futures.begin(); it != futures.end();) {
+          if (it->wait_for(std::chrono::microseconds(100)) ==
+              std::future_status::ready) {
+            results.push_back(it->get());
+            it = futures.erase(it);
+          } else {
+            ++it;
+          }
+        }
+      }
+      futures.push_back(
+          std::async(std::launch::async, evaluate_move, legal_moves[i]));
+    }
+
+    for (auto &future : futures) {
+      results.push_back(future.get());
+    }
+
+    for (const auto &result : results) {
+      if ((maximizing && result.score > best_score) ||
+          (!maximizing && result.score < best_score)) {
+        best_score = result.score;
+        fallback_best_code = result.encoded;
+      }
+    }
+  } else {
+    for (const Move &move : legal_moves) {
+      BitboardState local_board = board;
+      Piece moving_piece = local_board.get_piece_at(move.from);
+      local_board.make_move(move);
+
+      KillerMoves local_killers = *killers;
+      HistoryTable local_history = *history;
+      CounterMoveTable local_counters = *counters;
+      ContinuationHistory local_cont_history;
+
+      int score = alpha_beta_internal(
+          local_board, depth - 1, MIN, MAX, !maximizing, evaluate, *tt, true,
+          &local_killers, 1, &local_history, true, &local_counters,
+          &local_cont_history, moving_piece, move.to);
+
+      if ((maximizing && score > best_score) ||
+          (!maximizing && score < best_score)) {
+        best_score = score;
+        fallback_best_code = move.encoded;
+      }
+    }
+  }
+
+  if (best_move_code_out)
+    *best_move_code_out = fallback_best_code;
+
+  if (fallback_best_code == 0) {
+    return "";
+  }
+
+  BitboardState fallback_board = board;
+  Move fallback_move = fallback_board.decode_move(fallback_best_code);
+  fallback_board.make_move(fallback_move);
+  return fallback_board.to_fen();
+}
+
+std::string
+find_best_move(const std::string &fen, int depth,
+               const std::function<int(const std::string &)> &evaluate,
+               TranspositionTable *tt, int num_threads, KillerMoves *killers,
+               HistoryTable *history, CounterMoveTable *counters) {
+  EvalProvider eval_provider = MakeEvalProvider(evaluate, true);
+  BitboardState board(fen);
+  return find_best_move_impl(board, depth, eval_provider, tt, num_threads,
+                             killers, history, counters);
+}
+
+std::string
+find_best_move(bitboard::BitboardState board, int depth,
+               const std::function<int(const std::string &)> &evaluate,
+               TranspositionTable *tt, int num_threads, KillerMoves *killers,
+               HistoryTable *history, CounterMoveTable *counters) {
+  EvalProvider eval_provider = MakeEvalProvider(evaluate, true);
+  return find_best_move_impl(board, depth, eval_provider, tt, num_threads,
+                             killers, history, counters);
+}
+
+std::string find_best_move_builtin(const std::string &fen, int depth,
+                                   TranspositionTable *tt, int num_threads,
+                                   KillerMoves *killers, HistoryTable *history,
+                                   CounterMoveTable *counters) {
+  std::function<int(const std::string &)> native_eval =
+      static_cast<int (*)(const std::string &)>(&evaluate_material);
+  EvalProvider eval_provider = MakeEvalProvider(native_eval, false);
+  BitboardState board(fen);
+  return find_best_move_impl(board, depth, eval_provider, tt, num_threads,
+                             killers, history, counters);
+}
+
+std::string find_best_move_builtin(bitboard::BitboardState board, int depth,
+                                   TranspositionTable *tt, int num_threads,
+                                   KillerMoves *killers, HistoryTable *history,
+                                   CounterMoveTable *counters) {
+  std::function<int(const std::string &)> native_eval =
+      static_cast<int (*)(const std::string &)>(&evaluate_material);
+  EvalProvider eval_provider = MakeEvalProvider(native_eval, false);
+  return find_best_move_impl(board, depth, eval_provider, tt, num_threads,
+                             killers, history, counters);
+}
+
+static std::string convert_best_move_to_uci(BitboardState board,
+                                            uint16_t best_move_code) {
+  if (best_move_code == 0) {
+    return "";
+  }
+  return board.move_to_uci(best_move_code);
 }
 
 // Convert best move FEN back to move notation (UCI format: e.g., "e2e4")
@@ -954,84 +1141,53 @@ get_best_move_uci(const std::string &fen, int depth,
                   const std::function<int(const std::string &)> &evaluate,
                   TranspositionTable *tt, int num_threads, KillerMoves *killers,
                   HistoryTable *history, CounterMoveTable *counters) {
-  std::string best_move_fen = find_best_move(
-      fen, depth, evaluate, tt, num_threads, killers, history, counters);
+  EvalProvider eval_provider = MakeEvalProvider(evaluate, true);
+  uint16_t best_move_code = 0;
+  BitboardState board(fen);
+  find_best_move_impl(board, depth, eval_provider, tt, num_threads, killers,
+                      history, counters, &best_move_code);
+  return convert_best_move_to_uci(board, best_move_code);
+}
 
-  if (best_move_fen.empty()) {
-    return "";
-  }
+std::string
+get_best_move_uci(BitboardState board, int depth,
+                  const std::function<int(const std::string &)> &evaluate,
+                  TranspositionTable *tt, int num_threads, KillerMoves *killers,
+                  HistoryTable *history, CounterMoveTable *counters) {
+  EvalProvider eval_provider = MakeEvalProvider(evaluate, true);
+  uint16_t best_move_code = 0;
+  find_best_move_impl(board, depth, eval_provider, tt, num_threads, killers,
+                      history, counters, &best_move_code);
+  return convert_best_move_to_uci(board, best_move_code);
+}
 
-  // Find which move leads to this FEN
-  ChessBoard board(fen);
-  std::vector<Move> legal_moves = board.generate_legal_moves();
+std::string get_best_move_uci_builtin(const std::string &fen, int depth,
+                                      TranspositionTable *tt, int num_threads,
+                                      KillerMoves *killers,
+                                      HistoryTable *history,
+                                      CounterMoveTable *counters) {
+  uint16_t best_move_code = 0;
+  BitboardState board(fen);
+  std::function<int(const std::string &)> material_eval_fn =
+      static_cast<int (*)(const std::string &)>(&evaluate_material);
+  EvalProvider eval_provider = MakeEvalProvider(material_eval_fn, false);
+  find_best_move_impl(board, depth, eval_provider, tt, num_threads, killers,
+                      history, counters, &best_move_code);
+  return convert_best_move_to_uci(board, best_move_code);
+}
 
-  // Extract position part of FEN (everything before halfmove clock)
-  // FEN format: "position w/b castling ep halfmove fullmove"
-  // We only want: "position w/b castling ep"
-  auto last_space = best_move_fen.rfind(' ');
-  if (last_space != std::string::npos) {
-    last_space = best_move_fen.rfind(' ', last_space - 1);
-  }
-  std::string best_move_pos = (last_space != std::string::npos)
-                                  ? best_move_fen.substr(0, last_space)
-                                  : best_move_fen;
-
-  for (const Move &move : legal_moves) {
-    board.make_move(move);
-    std::string child_fen = board.to_fen();
-    board.unmake_move(move);
-
-    // Extract position part from child FEN too
-    last_space = child_fen.rfind(' ');
-    if (last_space != std::string::npos) {
-      last_space = child_fen.rfind(' ', last_space - 1);
-    }
-    std::string child_pos = (last_space != std::string::npos)
-                                ? child_fen.substr(0, last_space)
-                                : child_fen;
-
-    if (child_pos == best_move_pos) {
-      // Convert move to UCI format (e.g., "e2e4", "e7e8q" for promotion)
-      std::string uci = "";
-
-      // Convert square indices to algebraic notation
-      int from_rank = move.from / 8;
-      int from_file = move.from % 8;
-      int to_rank = move.to / 8;
-      int to_file = move.to % 8;
-
-      uci += char('a' + from_file);
-      uci += char('1' + from_rank);
-      uci += char('a' + to_file);
-      uci += char('1' + to_rank);
-
-      // Add promotion piece if applicable
-      if (move.promotion != EMPTY) {
-        char promo = ' ';
-        int piece_type = move.promotion < 0 ? -move.promotion : move.promotion;
-        switch (piece_type) {
-        case 2:
-          promo = 'n';
-          break; // Knight
-        case 3:
-          promo = 'b';
-          break; // Bishop
-        case 4:
-          promo = 'r';
-          break; // Rook
-        case 5:
-          promo = 'q';
-          break; // Queen
-        }
-        if (promo != ' ')
-          uci += promo;
-      }
-
-      return uci;
-    }
-  }
-
-  return ""; // Should not reach here
+std::string get_best_move_uci_builtin(BitboardState board, int depth,
+                                      TranspositionTable *tt, int num_threads,
+                                      KillerMoves *killers,
+                                      HistoryTable *history,
+                                      CounterMoveTable *counters) {
+  uint16_t best_move_code = 0;
+  std::function<int(const std::string &)> material_eval_fn =
+      static_cast<int (*)(const std::string &)>(&evaluate_material);
+  EvalProvider eval_provider = MakeEvalProvider(material_eval_fn, false);
+  find_best_move_impl(board, depth, eval_provider, tt, num_threads, killers,
+                      history, counters, &best_move_code);
+  return convert_best_move_to_uci(board, best_move_code);
 }
 
 // ============================================================================
@@ -1040,7 +1196,7 @@ get_best_move_uci(const std::string &fen, int depth,
 
 // Helper function to parse SAN (Standard Algebraic Notation) move
 // Returns true if move was successfully parsed and applied
-bool parse_and_apply_san(ChessBoard &board, const std::string &san_move) {
+bool parse_and_apply_san(BitboardState &board, const std::string &san_move) {
   // Remove check/checkmate markers
   std::string move = san_move;
   if (!move.empty() && (move.back() == '+' || move.back() == '#')) {
@@ -1050,7 +1206,7 @@ bool parse_and_apply_san(ChessBoard &board, const std::string &san_move) {
   // Handle castling
   if (move == "O-O" || move == "0-0" || move == "o-o") {
     // Kingside castling
-    bool is_white = board.is_white_to_move();
+    bool is_white = board.white_to_move();
     int king_rank = is_white ? 0 : 7;
     int king_from = king_rank * 8 + 4; // e1 or e8
     int king_to = king_rank * 8 + 6;   // g1 or g8
@@ -1058,7 +1214,7 @@ bool parse_and_apply_san(ChessBoard &board, const std::string &san_move) {
     return true;
   } else if (move == "O-O-O" || move == "0-0-0" || move == "o-o-o") {
     // Queenside castling
-    bool is_white = board.is_white_to_move();
+    bool is_white = board.white_to_move();
     int king_rank = is_white ? 0 : 7;
     int king_from = king_rank * 8 + 4; // e1 or e8
     int king_to = king_rank * 8 + 2;   // c1 or c8
@@ -1071,7 +1227,7 @@ bool parse_and_apply_san(ChessBoard &board, const std::string &san_move) {
   int piece_idx = 0;
   if (move.length() > 0 && std::isupper(move[0])) {
     char p = std::toupper(move[0]);
-    bool is_white = board.is_white_to_move();
+    bool is_white = board.white_to_move();
     switch (p) {
     case 'K':
       piece_type = is_white ? W_KING : B_KING;
@@ -1094,7 +1250,7 @@ bool parse_and_apply_san(ChessBoard &board, const std::string &san_move) {
     piece_idx = 1;
   } else {
     // Pawn move
-    bool is_white = board.is_white_to_move();
+    bool is_white = board.white_to_move();
     piece_type = is_white ? W_PAWN : B_PAWN;
   }
 
@@ -1110,7 +1266,7 @@ bool parse_and_apply_san(ChessBoard &board, const std::string &san_move) {
   size_t eq_pos = move.find('=');
   if (eq_pos != std::string::npos && eq_pos + 1 < move.length()) {
     char prom_char = std::toupper(move[eq_pos + 1]);
-    bool is_white = board.is_white_to_move();
+    bool is_white = board.white_to_move();
     switch (prom_char) {
     case 'Q':
       promotion = is_white ? W_QUEEN : B_QUEEN;
@@ -1154,7 +1310,7 @@ bool parse_and_apply_san(ChessBoard &board, const std::string &san_move) {
     if (m.to == target_square) {
       Piece moved_piece = board.get_piece_at(m.from);
       if (std::abs(moved_piece) == std::abs(piece_type) ||
-          (piece_type == (board.is_white_to_move() ? W_PAWN : B_PAWN) &&
+          (piece_type == (board.white_to_move() ? W_PAWN : B_PAWN) &&
            std::abs(moved_piece) == std::abs(W_PAWN))) {
         if (promotion == EMPTY || m.promotion == promotion) {
           candidates.push_back(m);
@@ -1208,7 +1364,8 @@ bool parse_and_apply_san(ChessBoard &board, const std::string &san_move) {
 
 std::string pgn_to_fen(const std::string &pgn) {
   // Start with initial position
-  ChessBoard board("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+  BitboardState board(
+      "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
 
   // Simple PGN parser - extract move notation
   // Remove headers and comments
@@ -1294,10 +1451,11 @@ std::string pgn_to_fen(const std::string &pgn) {
 // ============================================================================
 
 std::vector<PVLine>
-multi_pv_search(const std::string &fen, int depth, int num_lines,
+multi_pv_search(BitboardState board, int depth, int num_lines,
                 const std::function<int(const std::string &)> &evaluate,
                 TranspositionTable *tt, int num_threads, KillerMoves *killers,
                 HistoryTable *history, CounterMoveTable *counters) {
+  depth = enforce_depth_limit(depth);
 
   std::vector<PVLine> pv_lines;
 
@@ -1316,20 +1474,19 @@ multi_pv_search(const std::string &fen, int depth, int num_lines,
   if (!counters)
     counters = &local_counters;
 
-  ChessBoard board(fen);
+  EvalProvider eval_provider = MakeEvalProvider(evaluate, true);
   std::vector<Move> legal_moves = board.generate_legal_moves();
 
   if (legal_moves.empty()) {
     return pv_lines; // No moves available
   }
 
-  // Determine if maximizing
-  bool maximizing = fen.find(" w ") != std::string::npos;
+  bool maximizing = board.white_to_move();
 
   // Score all moves
   struct ScoredMove {
     Move move;
-    std::string fen_after;
+    BitboardState board_after;
     int score;
   };
 
@@ -1344,20 +1501,22 @@ multi_pv_search(const std::string &fen, int depth, int num_lines,
     std::vector<std::future<ScoredMove>> futures;
 
     auto evaluate_move = [&](const Move &move) -> ScoredMove {
-      ChessBoard local_board(fen);
+      BitboardState local_board = board;
       local_board.make_move(move);
-      std::string child_fen = local_board.to_fen();
+      BitboardState after_board = local_board;
 
-      int score;
-      {
-        // Acquire GIL when calling Python evaluate function
-        nb::gil_scoped_acquire gil;
-        score =
-            alpha_beta_optimized(child_fen, depth - 1, MIN, MAX, !maximizing,
-                                 evaluate, tt, 0, killers, history, counters);
-      }
+      KillerMoves thread_killers = *killers;
+      HistoryTable thread_history = *history;
+      CounterMoveTable thread_counters = *counters;
+      ContinuationHistory thread_cont_history;
+      Piece moving_piece = board.get_piece_at(move.from);
 
-      return {move, child_fen, score};
+      int score = alpha_beta_internal(
+          local_board, depth - 1, MIN, MAX, !maximizing, eval_provider, *tt,
+          true, &thread_killers, 1, &thread_history, true, &thread_counters,
+          &thread_cont_history, moving_piece, move.to);
+
+      return {move, std::move(after_board), score};
     };
 
     // Launch threads
@@ -1391,17 +1550,22 @@ multi_pv_search(const std::string &fen, int depth, int num_lines,
   } else {
     // Sequential evaluation (original code)
     for (const Move &move : legal_moves) {
-      board.make_move(move);
-      std::string child_fen = board.to_fen();
+      BitboardState local_board = board;
+      local_board.make_move(move);
+      BitboardState after_board = local_board;
 
-      int score =
-          alpha_beta_optimized(child_fen, depth - 1, MIN, MAX, !maximizing,
-                               evaluate, tt, 0, killers, history, counters);
+      KillerMoves local_killers = *killers;
+      HistoryTable local_history = *history;
+      CounterMoveTable local_counters = *counters;
+      ContinuationHistory local_cont_history;
+      Piece moving_piece = board.get_piece_at(move.from);
 
-      board.unmake_move(move);
+      int score = alpha_beta_internal(
+          local_board, depth - 1, MIN, MAX, !maximizing, eval_provider, *tt,
+          true, &local_killers, 1, &local_history, true, &local_counters,
+          &local_cont_history, moving_piece, move.to);
 
-      ScoredMove sm{move, child_fen, score};
-      scored_moves.push_back(sm);
+      scored_moves.push_back({move, std::move(after_board), score});
     }
   }
 
@@ -1457,74 +1621,32 @@ multi_pv_search(const std::string &fen, int depth, int num_lines,
 
     // Extract full PV from TT by following best moves
     line.pv = line.uci_move;
-    std::string current_fen = scored_moves[i].fen_after;
-    ChessBoard pv_board(current_fen);
+    BitboardState pv_board = scored_moves[i].board_after;
 
     // Walk through TT to extract continuation
     for (int pv_depth = 0; pv_depth < depth - 1 && pv_depth < 10; pv_depth++) {
-      std::string best_move_fen = tt->get_best_move(current_fen);
-
-      if (best_move_fen.empty()) {
-        break; // No best move in TT
+      uint16_t pv_move_code = tt->get_best_move(pv_board.zobrist());
+      if (pv_move_code == 0) {
+        break;
       }
 
-      // Try to apply the best move
-      std::vector<Move> legal = pv_board.generate_legal_moves();
-      bool move_found = false;
-
-      for (const Move &legal_move : legal) {
-        pv_board.make_move(legal_move);
-        std::string result_fen = pv_board.to_fen();
-
-        if (result_fen == best_move_fen) {
-          // Found the move! Convert to UCI
-          char from_file = 'a' + (legal_move.from % 8);
-          char from_rank = '1' + (legal_move.from / 8);
-          char to_file = 'a' + (legal_move.to % 8);
-          char to_rank = '1' + (legal_move.to / 8);
-
-          std::string uci_move =
-              std::string() + from_file + from_rank + to_file + to_rank;
-
-          // Add promotion if needed
-          if (legal_move.promotion != EMPTY) {
-            char promo = ' ';
-            int piece_type = legal_move.promotion < 0 ? -legal_move.promotion
-                                                      : legal_move.promotion;
-            switch (piece_type) {
-            case 2:
-              promo = 'n';
-              break;
-            case 3:
-              promo = 'b';
-              break;
-            case 4:
-              promo = 'r';
-              break;
-            case 5:
-              promo = 'q';
-              break;
-            }
-            if (promo != ' ')
-              uci_move += promo;
-          }
-
-          line.pv += " " + uci_move;
-          current_fen = result_fen;
-          move_found = true;
-          break;
-        }
-
-        pv_board.unmake_move(legal_move);
-      }
-
-      if (!move_found) {
-        break; // Can't continue PV
-      }
+      Move pv_move = pv_board.decode_move(pv_move_code);
+      pv_board.make_move(pv_move);
+      line.pv += " " + pv_board.move_to_uci(pv_move_code);
     }
 
     pv_lines.push_back(line);
   }
 
   return pv_lines;
+}
+
+std::vector<PVLine>
+multi_pv_search(const std::string &fen, int depth, int num_lines,
+                const std::function<int(const std::string &)> &evaluate,
+                TranspositionTable *tt, int num_threads, KillerMoves *killers,
+                HistoryTable *history, CounterMoveTable *counters) {
+  BitboardState board(fen);
+  return multi_pv_search(board, depth, num_lines, evaluate, tt, num_threads,
+                         killers, history, counters);
 }

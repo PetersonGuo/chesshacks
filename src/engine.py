@@ -6,11 +6,69 @@ These are not directly needed for the game connection but provide useful
 functionality for testing and development.
 """
 
+import os
+import sys
 import time
 
-from .native_loader import ensure_c_helpers
+import chess
+
+if __package__ in (None, ""):
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if project_root not in sys.path:
+        sys.path.insert(0, project_root)
+    from native_loader import ensure_c_helpers
+else:
+    from .native_loader import ensure_c_helpers
 
 c_helpers = ensure_c_helpers()
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        value = int(os.getenv(name, default))
+        return value if value > 0 else default
+    except (TypeError, ValueError):
+        return default
+
+
+DEFAULT_MAX_DEPTH = _env_int("CHESSHACKS_MAX_DEPTH", 5)
+c_helpers.set_max_search_depth(DEFAULT_MAX_DEPTH)
+
+PIECE_SYMBOL_TO_INT = {
+    "P": 1,
+    "N": 2,
+    "B": 3,
+    "R": 4,
+    "Q": 5,
+    "K": 6,
+    "p": -1,
+    "n": -2,
+    "b": -3,
+    "r": -4,
+    "q": -5,
+    "k": -6,
+}
+
+
+def _board_to_bitboard_state(board: chess.Board) -> c_helpers.BitboardState:
+    pieces: list[int] = []
+    for square in chess.SQUARES:
+        piece = board.piece_at(square)
+        if piece is None:
+            pieces.append(0)
+        else:
+            pieces.append(PIECE_SYMBOL_TO_INT[piece.symbol()])
+
+    castling = board.castling_xfen()
+    ep_square = board.ep_square if board.ep_square is not None else -1
+    return c_helpers.bitboard_from_components(
+        pieces,
+        board.turn == chess.WHITE,
+        castling,
+        ep_square,
+        board.halfmove_clock,
+        board.fullmove_number,
+    )
 
 
 def has_cuda():
@@ -42,18 +100,7 @@ def get_cuda_status():
 
 
 def nnue_evaluate(fen: str) -> int:
-    """
-    Evaluate position using NNUE if loaded, otherwise PST evaluation
-
-    This automatically uses NNUE evaluation if a model is loaded,
-    otherwise falls back to piece-square table evaluation.
-
-    Args:
-        fen: FEN string of the position to evaluate
-
-    Returns:
-        Evaluation score in centipawns (positive = white advantage)
-    """
+    """Evaluate a position using NNUE if available, otherwise PST."""
     return c_helpers.evaluate(fen)
 
 
@@ -67,28 +114,18 @@ def alpha_beta_basic(
 ):
     """
     Call C++ alpha_beta_basic function - bare bones alpha-beta with no optimizations
-
-    Args:
-        fen: FEN string of the position
-        depth: Search depth
-        alpha: Alpha value (defaults to MIN)
-        beta: Beta value (defaults to MAX)
-        maximizing_player: True if maximizing player (defaults to True if FEN indicates white)
-        evaluate: Evaluation function (defaults to nnue_evaluate)
-
-    Returns:
-        Evaluation score
     """
     if alpha is None:
         alpha = c_helpers.MIN
     if beta is None:
         beta = c_helpers.MAX
     if maximizing_player is None:
-        # Determine from FEN (second part should be 'w' or 'b')
         parts = fen.split()
         maximizing_player = len(parts) > 1 and parts[1] == "w"
     if evaluate is None:
-        evaluate = nnue_evaluate
+        return c_helpers.alpha_beta_basic_builtin(
+            fen, depth, alpha, beta, maximizing_player
+        )
 
     return c_helpers.alpha_beta_basic(
         fen, depth, alpha, beta, maximizing_player, evaluate
@@ -106,35 +143,31 @@ def alpha_beta_optimized(
     num_threads: int = 0,
     killers=None,
     history=None,
+    counters=None,
 ):
     """
     Call C++ alpha_beta_optimized function - full optimizations (TT, move ordering, etc.)
-
-    Args:
-        fen: FEN string of the position
-        depth: Search depth
-        alpha: Alpha value (defaults to MIN)
-        beta: Beta value (defaults to MAX)
-        maximizing_player: True if maximizing player (defaults to True if FEN indicates white)
-        evaluate: Evaluation function (defaults to nnue_evaluate)
-        tt: TranspositionTable instance (optional, creates new one if None)
-        num_threads: Number of threads (0 = auto, 1 = sequential)
-        killers: KillerMoves instance (optional)
-        history: HistoryTable instance (optional)
-
-    Returns:
-        Evaluation score
     """
     if alpha is None:
         alpha = c_helpers.MIN
     if beta is None:
         beta = c_helpers.MAX
     if maximizing_player is None:
-        # Determine from FEN
         parts = fen.split()
         maximizing_player = len(parts) > 1 and parts[1] == "w"
     if evaluate is None:
-        evaluate = nnue_evaluate
+        return c_helpers.alpha_beta_optimized_builtin(
+            fen,
+            depth,
+            alpha,
+            beta,
+            maximizing_player,
+            tt,
+            num_threads,
+            killers,
+            history,
+            counters,
+        )
 
     return c_helpers.alpha_beta_optimized(
         fen,
@@ -147,6 +180,7 @@ def alpha_beta_optimized(
         num_threads,
         killers,
         history,
+        counters,
     )
 
 
@@ -160,37 +194,32 @@ def alpha_beta_cuda(
     tt=None,
     killers=None,
     history=None,
+    counters=None,
 ):
     """
     Call C++ alpha_beta_cuda function - CUDA-accelerated search (falls back to optimized)
-
-    Args:
-        fen: FEN string of the position
-        depth: Search depth
-        alpha: Alpha value (defaults to MIN)
-        beta: Beta value (defaults to MAX)
-        maximizing_player: True if maximizing player (defaults to True if FEN indicates white)
-        evaluate: Evaluation function (defaults to nnue_evaluate)
-        tt: TranspositionTable instance (optional)
-        killers: KillerMoves instance (optional)
-        history: HistoryTable instance (optional)
-
-    Returns:
-        Evaluation score
     """
     if alpha is None:
         alpha = c_helpers.MIN
     if beta is None:
         beta = c_helpers.MAX
     if maximizing_player is None:
-        # Determine from FEN
         parts = fen.split()
         maximizing_player = len(parts) > 1 and parts[1] == "w"
     if evaluate is None:
-        evaluate = nnue_evaluate
+        evaluate = c_helpers.evaluate_material
 
     return c_helpers.alpha_beta_cuda(
-        fen, depth, alpha, beta, maximizing_player, evaluate, tt, killers, history
+        fen,
+        depth,
+        alpha,
+        beta,
+        maximizing_player,
+        evaluate,
+        tt,
+        killers,
+        history,
+        counters,
     )
 
 
@@ -215,6 +244,7 @@ def search_position(
     tt=None,
     killers=None,
     history=None,
+    counters=None,
 ) -> int:
     """
     Search a position using the best available engine
@@ -228,20 +258,24 @@ def search_position(
         tt: TranspositionTable instance (creates new if None)
         killers: KillerMoves instance (creates new if None)
         history: HistoryTable instance (creates new if None)
+        counters: CounterMoveTable instance (creates new if None)
 
     Returns:
         Evaluation score
     """
+    if counters is None:
+        counters = c_helpers.CounterMoveTable()
+
     if use_cuda:
         # Try CUDA-accelerated search, fall back to CPU if it fails
         try:
             return alpha_beta_cuda(
                 fen,
                 depth,
-                evaluate=nnue_evaluate,
                 tt=tt,
                 killers=killers,
                 history=history,
+                counters=counters,
             )
         except Exception as e:
             # CUDA failed, fall back to CPU
@@ -249,22 +283,22 @@ def search_position(
             return alpha_beta_optimized(
                 fen,
                 depth,
-                evaluate=nnue_evaluate,
                 tt=tt,
                 num_threads=num_threads,
                 killers=killers,
                 history=history,
+                counters=counters,
             )
     else:
         # Use optimized CPU search with all features
         return alpha_beta_optimized(
             fen,
             depth,
-            evaluate=nnue_evaluate,
             tt=tt,
             num_threads=num_threads,
             killers=killers,
             history=history,
+            counters=counters,
         )
 
 
