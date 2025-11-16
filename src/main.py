@@ -189,7 +189,7 @@ c_helpers = ensure_c_helpers()
 # Global configuration
 SEARCH_DEPTH = ENV_CONFIG.search_depth
 c_helpers.set_max_search_depth(SEARCH_DEPTH)
-NUM_THREADS = 0  # 0 = auto-detect CPU cores
+NUM_THREADS = ENV_CONFIG.search_threads
 PROBABILITY_TEMPERATURE = 200.0
 
 # Persistent native resources

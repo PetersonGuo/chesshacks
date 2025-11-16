@@ -112,10 +112,40 @@ detect_local_cmake() {
     fi
 }
 
+download_cmake_release() {
+    local version="${CHESSHACKS_CMAKE_VERSION:-3.29.6}"
+    local archive_name="cmake-${version}-linux-x86_64.tar.gz"
+    local download_url="https://github.com/Kitware/CMake/releases/download/v${version}/${archive_name}"
+    local target_dir="$SCRIPT_DIR/third_party/cmake-${version}-linux-x86_64"
+
+    if [[ -x "$target_dir/bin/cmake" ]]; then
+        LOCAL_CMAKE_BIN="$target_dir/bin/cmake"
+        return
+    fi
+
+    echo "No CMake binary detected. Downloading ${archive_name}..."
+    mkdir -p "$SCRIPT_DIR/third_party"
+    local archive_path="$SCRIPT_DIR/third_party/${archive_name}"
+    if command -v curl >/dev/null 2>&1; then
+        curl -L "$download_url" -o "$archive_path"
+    elif command -v wget >/dev/null 2>&1; then
+        wget -O "$archive_path" "$download_url"
+    else
+        echo "ERROR: Neither curl nor wget is available to download CMake." >&2
+        exit 1
+    fi
+
+    tar -xzf "$archive_path" -C "$SCRIPT_DIR/third_party"
+    LOCAL_CMAKE_BIN="$target_dir/bin/cmake"
+}
+
 detect_local_cmake
 
 if [[ -n "$LOCAL_CMAKE_BIN" ]]; then
     echo "Using bundled CMake binary: $LOCAL_CMAKE_BIN"
+else
+    download_cmake_release
+    echo "Downloaded CMake binary: $LOCAL_CMAKE_BIN"
 fi
 
 # Run tool checks in parallel for faster setup (skip cmake if bundled)

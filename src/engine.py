@@ -27,6 +27,7 @@ ENV_CONFIG = get_env_config()
 
 
 DEFAULT_MAX_DEPTH = ENV_CONFIG.search_depth
+DEFAULT_SEARCH_THREADS = max(1, ENV_CONFIG.search_threads)
 c_helpers.set_max_search_depth(DEFAULT_MAX_DEPTH)
 
 PIECE_SYMBOL_TO_INT = {
@@ -135,7 +136,7 @@ def alpha_beta_optimized(
     maximizing_player: bool = None,
     evaluate=None,
     tt=None,
-    num_threads: int = 0,
+    num_threads: int = DEFAULT_SEARCH_THREADS,
     killers=None,
     history=None,
     counters=None,
@@ -235,7 +236,7 @@ def search_position(
     fen: str,
     depth: int,
     use_cuda: bool = False,
-    num_threads: int = 0,
+    num_threads: int = DEFAULT_SEARCH_THREADS,
     tt=None,
     killers=None,
     history=None,

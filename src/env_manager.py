@@ -31,6 +31,7 @@ DEFAULT_NNUE_PATH = PROJECT_ROOT / "train" / "nnue_model" / "checkpoints" / "bes
 @dataclass(frozen=True)
 class EnvConfig:
   search_depth: int
+  search_threads: int
   serve_port: int
   hf_token: Optional[str]
   cuda_enabled: bool
@@ -41,7 +42,8 @@ class EnvConfig:
 def get_env_config() -> EnvConfig:
   default_nnue = os.getenv("CHESSHACKS_NNUE_MODEL", str(DEFAULT_NNUE_PATH))
   return EnvConfig(
-      search_depth=_env_int("CHESSHACKS_MAX_DEPTH", 6),
+      search_depth=_env_int("CHESSHACKS_MAX_DEPTH", 4),
+      search_threads=_env_int("CHESSHACKS_NUM_THREADS", 1),
       serve_port=_env_int("SERVE_PORT", 5058),
       hf_token=os.getenv("HF_TOKEN"),
       cuda_enabled=_env_bool("CHESSHACKS_ENABLE_CUDA", False),
