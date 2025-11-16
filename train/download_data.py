@@ -18,12 +18,14 @@ import io
 import random
 import requests
 from tqdm import tqdm
-from typing import Optional, Tuple, Dict, Any, Iterator
+from typing import Optional, Tuple, Dict, Any, Iterator, List
 from contextlib import contextmanager
 import chess
 import chess.pgn
 import chess.engine
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from queue import Queue, Empty
+from threading import Thread
 from .config import TrainingConfig, get_config
 
 
@@ -297,16 +299,52 @@ def _direct_download_only(url: str, compressed_path: str) -> str:
     return compressed_path
 
 
+def _extract_positions_from_game(game: chess.pgn.Game, positions_per_game: int) -> List[str]:
+    """
+    Extract positions from a single game using reservoir sampling.
+    
+    Args:
+        game: chess.pgn.Game object
+        positions_per_game: Number of positions to sample per game
+    
+    Returns:
+        List of FEN strings
+    """
+    board = game.board()
+    sampled_positions = []
+    move_count = 0
+    
+    for move in game.mainline_moves():
+        board.push(move)
+        move_count += 1
+        fen = board.fen()
+        
+        # Reservoir sampling: for first k positions, add directly
+        if len(sampled_positions) < positions_per_game:
+            sampled_positions.append(fen)
+        else:
+            # For position i, replace a random existing position with probability k/i
+            # move_count is 0-indexed, so we've seen move_count+1 positions total
+            j = random.randint(0, move_count)
+            if j < positions_per_game:
+                sampled_positions[j] = fen
+    
+    return sampled_positions
+
+
 def extract_positions_from_pgn(pgn_path: str, max_games: Optional[int] = None,
                                 positions_per_game: Optional[int] = None,
+                                num_workers: Optional[int] = None,
                                 config: Optional[TrainingConfig] = None) -> Iterator[str]:
     """
     Extract positions from PGN file (simplified - no filtering)
+    Uses parallel processing to speed up extraction.
 
     Args:
         pgn_path: Path to PGN file (can be .zst compressed)
         max_games: Maximum number of games to process (None = all)
         positions_per_game: Number of positions to sample per game (defaults to config.download_positions_per_game or 10)
+        num_workers: Number of parallel workers (defaults to config.download_num_workers or 4)
         config: TrainingConfig instance (optional, for defaults)
 
     Yields:
@@ -314,15 +352,18 @@ def extract_positions_from_pgn(pgn_path: str, max_games: Optional[int] = None,
     """
     config, params = _resolve_config_params(
         config,
-        positions_per_game=positions_per_game
+        positions_per_game=positions_per_game,
+        num_workers=num_workers
     )
 
     positions_per_game = params['positions_per_game']
+    num_workers = params.get('num_workers', 4) or 4
 
     print(f"Reading from: {pgn_path}")
     print(f"Configuration:")
     print(f"  Positions per game: {positions_per_game}")
     print(f"  Max games: {max_games if max_games else 'All'}")
+    print(f"  Parallel workers: {num_workers}")
     print()
     
     @contextmanager
@@ -358,63 +399,145 @@ def extract_positions_from_pgn(pgn_path: str, max_games: Optional[int] = None,
             with open(path, 'r', encoding='utf-8', errors='ignore') as f:
                 yield f
     
-    game_count = 0
-    total_positions_extracted = 0
-    games_with_no_positions = 0
-
-    with open_pgn_file(pgn_path) as pgn_file:
-        with tqdm(total=max_games, desc="Extracting positions", unit=" games") as pbar:
-            while True:
-                if max_games and game_count >= max_games:
-                    break
-
-                game = chess.pgn.read_game(pgn_file)
-                if game is None:
-                    break
-
-                game_count += 1
-                board = game.board()
-
-                # Use reservoir sampling to sample positions on-the-fly
-                # This avoids collecting all positions in memory first
-                sampled_positions = []
-                move_count = 0
-                
-                for move in game.mainline_moves():
-                    board.push(move)
-                    move_count += 1
-                    fen = board.fen()
+    # Use parallel processing for better performance
+    game_queue = Queue(maxsize=num_workers * 2)  # Buffer size
+    result_queue = Queue()
+    game_count = [0]  # Use list to allow modification in nested function
+    total_positions_extracted = [0]
+    games_with_no_positions = [0]
+    reader_done = [False]
+    
+    def game_reader():
+        """Read games from PGN file and put them in the queue"""
+        try:
+            with open_pgn_file(pgn_path) as pgn_file:
+                while True:
+                    if max_games and game_count[0] >= max_games:
+                        break
                     
-                    # Reservoir sampling: for first k positions, add directly
-                    if len(sampled_positions) < positions_per_game:
-                        sampled_positions.append(fen)
-                    else:
-                        # For position i, replace a random existing position with probability k/i
-                        # move_count is 0-indexed, so we've seen move_count+1 positions total
-                        j = random.randint(0, move_count)
-                        if j < positions_per_game:
-                            sampled_positions[j] = fen
-
-                # Yield all sampled positions
-                if len(sampled_positions) > 0:
-                    for fen in sampled_positions:
-                        total_positions_extracted += 1
+                    game = chess.pgn.read_game(pgn_file)
+                    if game is None:
+                        break
+                    
+                    game_queue.put((game_count[0], game))
+                    game_count[0] += 1
+        except Exception as e:
+            print(f"Error reading games: {e}")
+        finally:
+            reader_done[0] = True
+            # Put sentinel values to signal workers to stop
+            for _ in range(num_workers):
+                game_queue.put(None)
+    
+    def game_worker():
+        """Process games from the queue"""
+        while True:
+            item = game_queue.get()
+            if item is None:  # Sentinel value
+                game_queue.task_done()
+                break
+            
+            game_idx, game = item
+            try:
+                positions = _extract_positions_from_game(game, positions_per_game)
+                result_queue.put((game_idx, positions))
+            except Exception as e:
+                print(f"Error processing game {game_idx}: {e}")
+                result_queue.put((game_idx, []))
+            finally:
+                game_queue.task_done()
+    
+    # Start reader thread
+    reader_thread = Thread(target=game_reader, daemon=True)
+    reader_thread.start()
+    
+    # Start worker threads
+    workers = []
+    for _ in range(num_workers):
+        worker = Thread(target=game_worker, daemon=True)
+        worker.start()
+        workers.append(worker)
+    
+    # Collect results in order
+    results_dict = {}
+    next_expected_idx = 0
+    
+    with tqdm(total=max_games, desc="Extracting positions", unit=" games") as pbar:
+        while True:
+            # Try to get results from queue (non-blocking first, then with timeout)
+            try:
+                while True:
+                    game_idx, positions = result_queue.get_nowait()
+                    results_dict[game_idx] = positions
+            except Empty:
+                pass
+            
+            # If no results available, wait briefly for new ones
+            if len(results_dict) == 0 and not reader_done[0]:
+                try:
+                    game_idx, positions = result_queue.get(timeout=0.1)
+                    results_dict[game_idx] = positions
+                except Empty:
+                    pass
+            
+            # Yield results in order
+            while next_expected_idx in results_dict:
+                positions = results_dict.pop(next_expected_idx)
+                if len(positions) > 0:
+                    for fen in positions:
+                        total_positions_extracted[0] += 1
                         yield fen
                 else:
-                    games_with_no_positions += 1
+                    games_with_no_positions[0] += 1
                 
-                # Update progress bar with positions count
-                pbar.set_postfix({'positions': total_positions_extracted})
+                pbar.set_postfix({'positions': total_positions_extracted[0]})
                 pbar.update(1)
+                next_expected_idx += 1
+                
+                if max_games and next_expected_idx >= max_games:
+                    break
+            
+            # Check if we're done (reader finished, no games in queue, no results waiting)
+            if max_games and next_expected_idx >= max_games:
+                break
+            
+            if reader_done[0] and game_queue.empty() and len(results_dict) == 0:
+                # One final check for any remaining results
+                try:
+                    while True:
+                        game_idx, positions = result_queue.get_nowait()
+                        results_dict[game_idx] = positions
+                except Empty:
+                    pass
+                
+                if len(results_dict) == 0:
+                    break
+    
+    # Wait for all threads to finish
+    reader_thread.join(timeout=5)
+    for worker in workers:
+        worker.join(timeout=5)
+    
+    # Yield any remaining results
+    for idx in sorted(results_dict.keys()):
+        if max_games and idx >= max_games:
+            break
+        positions = results_dict[idx]
+        if len(positions) > 0:
+            for fen in positions:
+                total_positions_extracted[0] += 1
+                yield fen
+        else:
+            games_with_no_positions[0] += 1
 
     # Print summary
     print("=" * 80)
     print("Position extraction summary:")
-    print(f"  Total games read: {game_count}")
-    print(f"  Games with no positions: {games_with_no_positions}")
-    print(f"  Total positions extracted: {total_positions_extracted}")
-    if game_count > 0:
-        avg_positions = total_positions_extracted / game_count
+    print(f"  Total games read: {game_count[0]}")
+    print(f"  Games with no positions: {games_with_no_positions[0]}")
+    print(f"  Total positions extracted: {total_positions_extracted[0]}")
+    if game_count[0] > 0:
+        avg_positions = total_positions_extracted[0] / game_count[0]
         print(f"  Average positions per game: {avg_positions:.2f}")
     print("=" * 80)
 
