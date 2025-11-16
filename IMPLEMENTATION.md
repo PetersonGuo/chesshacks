@@ -608,8 +608,16 @@ This chess engine now includes **24 advanced features**:
 ### Future Enhancements:
 
 - [TODO] Integrate real NNUE evaluation function
-- [TODO] CUDA batch evaluation
 - [TODO] Endgame tablebase support (Syzygy/Fathom integration)
+
+### Testing:
+
+**Test Suite**: 95 comprehensive tests across 16 test files
+- All tests use pytest framework with proper fixtures and parametrization
+- Test coverage includes all 24 advanced features
+- Performance profiling available via `performance_profile.py` (standalone script)
+- Run tests: `cd build && python -m pytest ../tests/test_*.py -v`
+- Run performance profiling: `cd build && python ../tests/performance_profile.py`
 
 ### Recently Completed:
 

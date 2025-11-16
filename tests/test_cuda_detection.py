@@ -35,11 +35,13 @@ def test_cpp_cuda_detection():
             else:
                 print("  - No CUDA devices detected")
 
-        return is_available
+        # Use assert instead of return for pytest
+        assert isinstance(is_available, bool), "CUDA availability should be boolean"
+        assert isinstance(cuda_info, str), "CUDA info should be string"
 
     except Exception as e:
         print(f"\n✗ Error checking C++ CUDA: {e}")
-        return False
+        assert False, f"Failed to check C++ CUDA: {e}"
 
 
 def test_python_cuda_detection():
@@ -58,7 +60,7 @@ def test_python_cuda_detection():
         if cuda_available:
             info = get_cuda_info()
             if info:
-                print(f"\n✓ PyTorch CUDA Details:")
+                print("\n✓ PyTorch CUDA Details:")
                 print(f"  - CUDA Version: {info['cuda_version']}")
                 print(f"  - Device Count: {info['device_count']}")
                 for dev in info["devices"]:
@@ -73,15 +75,18 @@ def test_python_cuda_detection():
                     "    conda install pytorch torchvision torchaudio pytorch-cuda=11.8 -c pytorch -c nvidia"
                 )
 
-        return cuda_available
+        # Use assert instead of return for pytest
+        assert isinstance(cuda_available, bool), "CUDA availability should be boolean"
+        assert isinstance(msg, str), "Message should be string"
 
     except ImportError:
         print("\n✗ Python CUDA checker not available")
         print("  - Module src/utils/cuda_check.py not found")
-        return False
+        # This is acceptable - not all systems have PyTorch
+        assert True
     except Exception as e:
         print(f"\n✗ Error checking Python CUDA: {e}")
-        return False
+        assert False, f"Failed to check Python CUDA: {e}"
 
 
 def test_nvidia_smi():
@@ -106,22 +111,22 @@ def test_nvidia_smi():
             for line in lines:
                 if line.strip():
                     print(f"  {line}")
-            return True
+            assert True, "nvidia-smi command successful"
         else:
             print("\n✗ nvidia-smi returned error")
-            return False
+            assert True, "nvidia-smi check completed (may not have GPU)"
 
     except FileNotFoundError:
         print("\n✗ nvidia-smi not found")
         print("  - NVIDIA drivers not installed")
         print("  - No NVIDIA GPU present")
-        return False
+        assert True, "nvidia-smi check completed (no NVIDIA drivers)"
     except subprocess.TimeoutExpired:
         print("\n✗ nvidia-smi timeout")
-        return False
+        assert False, "nvidia-smi command timed out"
     except Exception as e:
         print(f"\n✗ Error running nvidia-smi: {e}")
-        return False
+        assert False, f"Failed to run nvidia-smi: {e}"
 
 
 def test_integrated_detection():
@@ -132,20 +137,28 @@ def test_integrated_detection():
 
     try:
         import c_helpers
-        from cuda_check import is_cuda_available as py_is_cuda_available
 
         # Method 1: C++ bindings
         cpp_cuda = False
+        cpp_info = "Not available"
         try:
             cpp_cuda = c_helpers.is_cuda_available()
             cpp_info = c_helpers.get_cuda_info()
         except AttributeError:
-            cpp_info = "Not available"
+            pass
 
-        # Method 2: Python/PyTorch
-        py_cuda, py_msg = py_is_cuda_available()
+        # Method 2: Python/PyTorch (optional)
+        py_cuda = False
+        py_msg = "Module not found"
+        try:
+            from cuda_check import is_cuda_available as py_is_cuda_available
+
+            py_cuda, py_msg = py_is_cuda_available()
+        except ImportError:
+            py_msg = "cuda_check module not available"
 
         # Method 3: nvidia-smi
+        smi_cuda = False
         try:
             import subprocess
 
@@ -153,8 +166,8 @@ def test_integrated_detection():
                 ["nvidia-smi"], capture_output=True, timeout=1, check=False
             )
             smi_cuda = smi_result.returncode == 0
-        except:
-            smi_cuda = False
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
 
         print("\nDetection Methods:")
         print(f"  1. C++ bindings:    {cpp_cuda} - {cpp_info}")
@@ -178,14 +191,15 @@ def test_integrated_detection():
             print("  - Parallel search with multiple CPU threads")
             print("  - Still very fast: 57-210x speedup over baseline")
 
-        return has_cuda
+        # Use assert instead of return for pytest
+        assert isinstance(has_cuda, bool), "Final CUDA detection should be boolean"
 
     except Exception as e:
         print(f"\n✗ Error in integrated detection: {e}")
         import traceback
 
         traceback.print_exc()
-        return False
+        assert False, f"Integrated detection failed: {e}"
 
 
 def main():

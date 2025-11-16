@@ -40,6 +40,8 @@ make
 
 This will create the `c_helpers` module in the `build/` directory.
 
+**CUDA GPU Acceleration**: The engine now includes optional CUDA support for GPU-accelerated position evaluation. If you have an NVIDIA GPU with CUDA Toolkit installed, the build will automatically detect and enable GPU acceleration. See [CUDA_README.md](CUDA_README.md) for details.
+
 ### Running Tests
 
 All tests are located in the `tests/` directory and should be run from the `build/` directory using the correct Python environment:

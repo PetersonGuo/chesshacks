@@ -1,4 +1,8 @@
 #include "functions.h"
+#ifdef CUDA_ENABLED
+#include "cuda/cuda_eval.h"
+#include "evaluation.h"
+#endif
 #include <nanobind/nanobind.h>
 #include <nanobind/stl/function.h>
 #include <nanobind/stl/string.h>
@@ -8,6 +12,14 @@ namespace nb = nanobind;
 
 NB_MODULE(c_helpers, m) {
   m.doc() = "ChessHacks C++ extension module";
+
+#ifdef CUDA_ENABLED
+  // Initialize CUDA piece-square tables
+  cuda_init_tables(
+      PieceSquareTables::pawn_table, PieceSquareTables::knight_table,
+      PieceSquareTables::bishop_table, PieceSquareTables::rook_table,
+      PieceSquareTables::queen_table, PieceSquareTables::king_middlegame_table);
+#endif
 
   // Expose constants as attributes
   m.attr("MIN") = MIN;
@@ -96,6 +108,28 @@ NB_MODULE(c_helpers, m) {
   m.def("get_cuda_info", &get_cuda_info,
         "Get information about available CUDA devices.\n"
         "Returns a string describing the GPU and CUDA version.");
+
+#ifdef CUDA_ENABLED
+  // CUDA batch operations - using Python-friendly wrappers
+  m.def("cuda_batch_evaluate", &cuda_batch_evaluate_py, nb::arg("fens"),
+        "Batch evaluate multiple chess positions on GPU.\n"
+        "Much more efficient than evaluating positions one at a time.\n\n"
+        "fens: List of FEN strings to evaluate\n"
+        "Returns: List of evaluation scores");
+
+  m.def("cuda_batch_count_pieces", &cuda_batch_count_pieces_py, nb::arg("fens"),
+        "Count pieces in multiple positions on GPU.\n"
+        "Returns counts for each piece type (6 white, 6 black).\n\n"
+        "fens: List of FEN strings\n"
+        "Returns: List of lists with piece counts");
+
+  m.def("cuda_batch_hash_positions", &cuda_batch_hash_positions_py,
+        nb::arg("fens"),
+        "Generate hash values for multiple positions on GPU.\n"
+        "Used for transposition table lookups.\n\n"
+        "fens: List of FEN strings\n"
+        "Returns: List of hash values");
+#endif
 
   // 4. PGN to FEN: Convert PGN string to FEN string
   m.def("pgn_to_fen", &pgn_to_fen, nb::arg("pgn"),

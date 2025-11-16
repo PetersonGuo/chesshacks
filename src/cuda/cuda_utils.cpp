@@ -1,7 +1,10 @@
 #include "cuda_utils.h"
+#ifdef CUDA_ENABLED
+#include <cuda_runtime.h>
+#endif
 
 bool is_cuda_available() {
-#ifdef __CUDACC__
+#ifdef CUDA_ENABLED
   int device_count = 0;
   cudaError_t error = cudaGetDeviceCount(&device_count);
   return (error == cudaSuccess && device_count > 0);
@@ -11,7 +14,7 @@ bool is_cuda_available() {
 }
 
 std::string get_cuda_info() {
-#ifdef __CUDACC__
+#ifdef CUDA_ENABLED
   int device_count = 0;
   cudaError_t error = cudaGetDeviceCount(&device_count);
 
