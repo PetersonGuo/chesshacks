@@ -273,7 +273,7 @@ int NNUEEvaluator::evaluate(const ChessBoard& board) const {
 
     // Extract features from side-to-move perspective
     float features[INPUT_SIZE];
-    bool perspective = board.is_white_turn();
+    bool perspective = board.is_white_to_move();
     board_to_features(board, features, perspective);
 
     // Run forward pass

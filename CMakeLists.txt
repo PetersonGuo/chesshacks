@@ -71,17 +71,17 @@ set(SOURCE_FILES
 
 # Add CUDA files if CUDA is enabled
 if(CUDA_ENABLED)
-    list(APPEND SOURCE_FILES 
+    list(APPEND SOURCE_FILES
         src/cuda/cuda_eval.cu
         src/cuda/cuda_utils.cpp
     )
-    
+
     # Create the extension module with CUDA support
     nanobind_add_module(c_helpers ${SOURCE_FILES})
-    
+
     # Set CUDA compilation flags and include directories
     target_compile_definitions(c_helpers PRIVATE CUDA_ENABLED)
-    target_include_directories(c_helpers PRIVATE 
+    target_include_directories(c_helpers PRIVATE
         ${CUDAToolkit_INCLUDE_DIRS}
         ${CMAKE_SOURCE_DIR}/src/cuda
     )
@@ -90,12 +90,21 @@ if(CUDA_ENABLED)
         CUDA_SEPARABLE_COMPILATION ON
         CUDA_RESOLVE_DEVICE_SYMBOLS ON
     )
-    
+
     message(STATUS "Building with CUDA support")
     message(STATUS "CUDA Architectures: ${CMAKE_CUDA_ARCHITECTURES}")
 else()
+    # Add cuda_utils.cpp even for CPU-only build (provides fallback implementations)
+    list(APPEND SOURCE_FILES src/cuda/cuda_utils.cpp)
+
     # Create the extension module without CUDA
     nanobind_add_module(c_helpers ${SOURCE_FILES})
+
+    # Include cuda directory for headers
+    target_include_directories(c_helpers PRIVATE
+        ${CMAKE_SOURCE_DIR}/src/cuda
+    )
+
     message(STATUS "Building CPU-only version")
 endif()
 
