@@ -7,6 +7,7 @@ export CHESSHACKS_MAX_DEPTH=6
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD_DIR="$SCRIPT_DIR/build"
 USER_LOCAL_BIN="$HOME/.local/bin"
+LOCAL_CMAKE_BIN=""
 if [[ -d "$USER_LOCAL_BIN" ]] && [[ ":$PATH:" != *":$USER_LOCAL_BIN:"* ]]; then
     export PATH="$USER_LOCAL_BIN:$PATH"
 fi
@@ -44,6 +45,35 @@ if [[ -z "${PYTHON_BIN:-}" ]]; then
     PYTHON_BIN=$(command -v python3)
 fi
 
+PREBUILT_SO="${CHESSHACKS_PREBUILT_SO:-}"
+if [[ -z "$PREBUILT_SO" ]]; then
+    DEFAULT_SO="$SCRIPT_DIR/c_helpers.cpython-312-x86_64-linux-gnu.so"
+    if [[ -f "$DEFAULT_SO" ]]; then
+        PREBUILT_SO="$DEFAULT_SO"
+    fi
+fi
+
+if [[ -n "$PREBUILT_SO" ]]; then
+    echo "=================================================="
+    echo "Using prebuilt c_helpers shared object"
+    echo "Source: $PREBUILT_SO"
+    echo "Destination: $BUILD_DIR"
+    echo "=================================================="
+    mkdir -p "$BUILD_DIR"
+    TARGET_SO="$BUILD_DIR/$(basename "$PREBUILT_SO")"
+    cp "$PREBUILT_SO" "$TARGET_SO"
+    echo "Copied prebuilt module to $TARGET_SO"
+    echo "Verifying module import..."
+    if "$PYTHON_BIN" -c "import sys; sys.path.insert(0, '$BUILD_DIR'); import c_helpers; print('✓ Prebuilt module import successful')" 2>/dev/null; then
+        echo "=================================================="
+        echo "Prebuilt module ready!"
+        echo "=================================================="
+        exit 0
+    else
+        echo "⚠ Warning: Failed to import prebuilt module. Falling back to rebuild..."
+    fi
+fi
+
 UV_BIN=$(command -v uv || true)
 if [[ -n "$UV_BIN" ]]; then
     echo "Using uv for pip commands: $UV_BIN pip"
@@ -57,47 +87,48 @@ pip_install() {
     "${PIP_RUN[@]}" "$@"
 }
 
-ensure_tool_via_pip() {
-    local cmd="$1"
-    local pkg="$2"
-    if command -v "$cmd" >/dev/null 2>&1; then
+detect_local_cmake() {
+    local candidates=(
+        "$SCRIPT_DIR/cmake"
+        "$SCRIPT_DIR/cmake/bin/cmake"
+        "$SCRIPT_DIR/cmake-prebuilt/bin/cmake"
+        "$SCRIPT_DIR/cmake-precompiled/bin/cmake"
+        "$SCRIPT_DIR/prebuilt-cmake/bin/cmake"
+    )
+    if [[ -n "${CHESSHACKS_CMAKE_BIN:-}" && -x "${CHESSHACKS_CMAKE_BIN}" ]]; then
+        LOCAL_CMAKE_BIN="${CHESSHACKS_CMAKE_BIN}"
         return
     fi
-    echo "Installing $cmd via pip (--user) (package: $pkg)..."
-    if pip_install --user "$pkg"; then
-        hash -r
-        if ! command -v "$cmd" >/dev/null 2>&1; then
-            echo "ERROR: $cmd still not available after installing $pkg via pip" >&2
-            exit 1
-        fi
-    else
-        echo "ERROR: Failed to install $pkg via pip" >&2
-        exit 1
-    fi
-}
-
-ensure_clang_toolchain() {
-    if command -v clang >/dev/null 2>&1 && command -v clang++ >/dev/null 2>&1; then
-        return
-    fi
-    for pkg in clang-llvm clang; do
-        echo "Attempting to install clang toolchain via pip package '$pkg'..."
-        if pip_install --user "$pkg"; then
-            hash -r
-            if command -v clang >/dev/null 2>&1 && command -v clang++ >/dev/null 2>&1; then
-                return
-            fi
+    for candidate in "${candidates[@]}"; do
+        if [[ -x "$candidate" ]]; then
+            LOCAL_CMAKE_BIN="$candidate"
+            return
         fi
     done
-    echo "ERROR: Unable to install clang toolchain via pip (--user)." >&2
-    exit 1
+    local found
+    found=$(find "$SCRIPT_DIR" -maxdepth 2 -type f -name "cmake" -perm -111 2>/dev/null | head -n 1 || true)
+    if [[ -n "$found" ]]; then
+        LOCAL_CMAKE_BIN="$found"
+    fi
 }
 
-# Run all tool checks in parallel for faster setup
-ensure_tool_via_pip "cmake" "cmake" &
-ensure_tool_via_pip "ninja" "ninja" &
-ensure_clang_toolchain &
-wait  # Wait for all background jobs to complete; fails if any job fails
+detect_local_cmake
+
+if [[ -n "$LOCAL_CMAKE_BIN" ]]; then
+    echo "Using bundled CMake binary: $LOCAL_CMAKE_BIN"
+fi
+
+# Run tool checks in parallel for faster setup (skip cmake if bundled)
+if [[ -n "$LOCAL_CMAKE_BIN" ]]; then
+    CMAKE_BIN="$LOCAL_CMAKE_BIN"
+else
+    CMAKE_BIN=$(command -v cmake || true)
+fi
+
+if [[ -z "${CMAKE_BIN:-}" ]]; then
+    echo "ERROR: CMake binary not found. Install cmake or set CHESSHACKS_CMAKE_BIN." >&2
+    exit 1
+fi
 
 if [[ ! -d "$SCRIPT_DIR/third_party/libtorch" ]]; then
     curl -LO https://download.pytorch.org/libtorch/cpu/libtorch-shared-with-deps-2.9.1%2Bcpu.zip
@@ -221,7 +252,7 @@ mkdir -p "$BUILD_DIR"
 cd "$BUILD_DIR"
 
 echo "Configuring CMake..."
-cmake -S "$SCRIPT_DIR" -B . \
+"$CMAKE_BIN" -S "$SCRIPT_DIR" -B . \
       -G "$CMAKE_GENERATOR" \
       -DCMAKE_C_COMPILER="$C_COMPILER" \
       -DCMAKE_CXX_COMPILER="$CXX_COMPILER" \
@@ -241,7 +272,7 @@ cmake -S "$SCRIPT_DIR" -B . \
 echo ""
 
 echo "Building C++ extensions..."
-cmake --build . -j"$NUM_CORES"
+"$CMAKE_BIN" --build . -j"$NUM_CORES"
 echo ""
 
 SO_FILE=$(find "$BUILD_DIR" -maxdepth 1 -name "c_helpers*.so" -type f | head -1)
