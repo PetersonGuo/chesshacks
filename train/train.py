@@ -30,6 +30,80 @@ except ImportError:
     from train.upload_to_hf import upload_model_to_hf
 
 
+class WarmupScheduler:
+    """
+    Wraps a learning rate scheduler with warmup functionality.
+    During warmup epochs, linearly increases learning rate from warmup_start_lr to target_lr.
+    After warmup, delegates to the wrapped scheduler.
+    """
+    def __init__(self, 
+                 optimizer: torch.optim.Optimizer,
+                 base_scheduler: Optional[torch.optim.lr_scheduler.LRScheduler],
+                 warmup_epochs: int,
+                 target_lr: float,
+                 warmup_start_lr: Optional[float] = None):
+        """
+        Args:
+            optimizer: The optimizer whose learning rate will be scheduled
+            base_scheduler: The scheduler to use after warmup (can be None)
+            warmup_epochs: Number of epochs for warmup
+            target_lr: Target learning rate after warmup
+            warmup_start_lr: Starting learning rate for warmup (None = 0.0)
+        """
+        self.optimizer = optimizer
+        self.base_scheduler = base_scheduler
+        self.warmup_epochs = warmup_epochs
+        self.target_lr = target_lr
+        self.warmup_start_lr = warmup_start_lr if warmup_start_lr is not None else 0.0
+        self.current_epoch = -1  # Start at -1 so first step() sets LR for epoch 0
+        
+        # Initialize learning rate - will be set properly on first step()
+        if warmup_epochs > 0:
+            for param_group in self.optimizer.param_groups:
+                param_group['lr'] = self.warmup_start_lr
+        
+    def step(self):
+        """Update learning rate for next epoch"""
+        self.current_epoch += 1
+        
+        if self.current_epoch < self.warmup_epochs:
+            # Warmup phase: linear interpolation from warmup_start_lr to target_lr
+            # Epoch 0: 1/warmup_epochs, Epoch 1: 2/warmup_epochs, ..., Epoch (warmup_epochs-1): warmup_epochs/warmup_epochs = target_lr
+            lr = self.warmup_start_lr + (self.target_lr - self.warmup_start_lr) * \
+                 (self.current_epoch + 1) / self.warmup_epochs
+            for param_group in self.optimizer.param_groups:
+                param_group['lr'] = lr
+        else:
+            # After warmup: use base scheduler if available
+            if self.base_scheduler is not None:
+                self.base_scheduler.step()
+    
+    def get_last_lr(self):
+        """Get the last computed learning rate"""
+        return [group['lr'] for group in self.optimizer.param_groups]
+    
+    def state_dict(self):
+        """Return state dict for checkpointing"""
+        state = {
+            'current_epoch': self.current_epoch,
+            'warmup_epochs': self.warmup_epochs,
+            'target_lr': self.target_lr,
+            'warmup_start_lr': self.warmup_start_lr,
+        }
+        if self.base_scheduler is not None:
+            state['base_scheduler'] = self.base_scheduler.state_dict()
+        return state
+    
+    def load_state_dict(self, state_dict):
+        """Load state dict from checkpoint"""
+        self.current_epoch = state_dict['current_epoch']
+        self.warmup_epochs = state_dict['warmup_epochs']
+        self.target_lr = state_dict['target_lr']
+        self.warmup_start_lr = state_dict['warmup_start_lr']
+        if self.base_scheduler is not None and 'base_scheduler' in state_dict:
+            self.base_scheduler.load_state_dict(state_dict['base_scheduler'])
+
+
 def set_seed(seed: int) -> None:
     """Set random seed for reproducibility"""
     random.seed(seed)
@@ -59,21 +133,33 @@ def get_optimizer(model: torch.nn.Module, config: TrainingConfig) -> torch.optim
 
 
 def get_scheduler(optimizer: torch.optim.Optimizer, 
-                  config: TrainingConfig) -> Optional[torch.optim.lr_scheduler.LRScheduler]:
+                  config: TrainingConfig):
     """Create learning rate scheduler based on configuration"""
+    base_scheduler = None
+    
     if config.scheduler == 'step':
-        return optim.lr_scheduler.StepLR(
+        base_scheduler = optim.lr_scheduler.StepLR(
             optimizer,
             step_size=config.scheduler_step_size,
             gamma=config.scheduler_gamma
         )
     elif config.scheduler == 'cosine':
-        return optim.lr_scheduler.CosineAnnealingLR(
+        base_scheduler = optim.lr_scheduler.CosineAnnealingLR(
             optimizer,
-            T_max=config.num_epochs
+            T_max=config.num_epochs - config.warmup_epochs  # Adjust T_max to account for warmup
         )
-    else:
-        return None
+    
+    # Wrap with warmup if enabled
+    if config.warmup_epochs > 0:
+        return WarmupScheduler(
+            optimizer=optimizer,
+            base_scheduler=base_scheduler,
+            warmup_epochs=config.warmup_epochs,
+            target_lr=config.learning_rate,
+            warmup_start_lr=config.warmup_start_lr
+        )
+    
+    return base_scheduler
 
 
 def get_loss_function(config: TrainingConfig) -> torch.nn.Module:
@@ -129,6 +215,10 @@ def train_epoch(model: torch.nn.Module, train_loader: torch.utils.data.DataLoade
 
         # Backward pass
         loss.backward()
+
+        # Gradient clipping to prevent explosion (especially important with higher LR)
+        if config.max_grad_norm is not None:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), config.max_grad_norm)
 
         # Optimizer step
         optimizer.step()
@@ -193,7 +283,7 @@ def save_checkpoint(
     filename: str,
     upload_to_hf: bool = False,
     upload_threads: Optional[List[threading.Thread]] = None,
-    scheduler: Optional[torch.optim.lr_scheduler.LRScheduler] = None,
+    scheduler = None,  # Can be LRScheduler or WarmupScheduler
     best_val_loss: Optional[float] = None,
     training_start_time: Optional[str] = None,
 ) -> None:
@@ -266,7 +356,7 @@ def load_checkpoint(
     optimizer: torch.optim.Optimizer,
     checkpoint_path: str,
     map_location: Optional[torch.device] = None,
-    scheduler: Optional[torch.optim.lr_scheduler.LRScheduler] = None,
+    scheduler = None,  # Can be LRScheduler or WarmupScheduler
 ) -> Tuple[int, float, Optional[str]]:
     """
     Load model checkpoint
@@ -456,9 +546,17 @@ def train(config: TrainingConfig) -> Tuple[torch.nn.Module, Dict[str, list]]:
             map_location=device,
             scheduler=scheduler,
         )
+        # Sync scheduler with start_epoch (scheduler was saved before step(), so we need to catch up)
+        if scheduler is not None:
+            # Step scheduler to match start_epoch (scheduler tracks last completed epoch)
+            while (hasattr(scheduler, 'current_epoch') and 
+                   scheduler.current_epoch < start_epoch - 1):
+                scheduler.step()
 
     # Training loop
     print(f"\nStarting training for {config.num_epochs} epochs...")
+    if config.warmup_epochs > 0:
+        print(f"Warmup: {config.warmup_epochs} epochs (LR: {config.warmup_start_lr or 0.0} -> {config.learning_rate})")
     print("=" * 80)
 
     # Track training start time if not resuming from checkpoint
@@ -479,6 +577,10 @@ def train(config: TrainingConfig) -> Tuple[torch.nn.Module, Dict[str, list]]:
     last_val_loss: Optional[float] = None
     last_train_loss: Optional[float] = None
 
+    # Initialize learning rate for first epoch if warmup is enabled and starting from beginning
+    if scheduler is not None and config.warmup_epochs > 0 and start_epoch == 0:
+        scheduler.step()  # Set LR for epoch 0
+
     for epoch in range(start_epoch, config.num_epochs):
         # Train
         train_loss = train_epoch(
@@ -490,8 +592,13 @@ def train(config: TrainingConfig) -> Tuple[torch.nn.Module, Dict[str, list]]:
         # Log current learning rate
         current_lr = optimizer.param_groups[0]['lr']
         training_history['learning_rate'].append(current_lr)
+        
+        # Show warmup status
+        warmup_status = ""
+        if config.warmup_epochs > 0 and epoch < config.warmup_epochs:
+            warmup_status = f" [Warmup {epoch+1}/{config.warmup_epochs}]"
 
-        print(f"Epoch {epoch+1}/{config.num_epochs} - Train Loss: {train_loss:.4f}, LR: {current_lr:.6f}")
+        print(f"Epoch {epoch+1}/{config.num_epochs} - Train Loss: {train_loss:.4f}, LR: {current_lr:.6f}{warmup_status}")
 
         # Validate
         val_loss = None
