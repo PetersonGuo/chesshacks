@@ -2,7 +2,7 @@
 #define FUNCTIONS_H
 
 // Include all module headers
-#include "cuda_utils.h"
+#include "cuda/cuda_utils.h"
 #include "evaluation.h"
 #include "move_ordering.h"
 #include "opening_book.h"

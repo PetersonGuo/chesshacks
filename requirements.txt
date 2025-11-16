@@ -16,6 +16,7 @@ typing-inspection==0.4.2
 typing_extensions==4.15.0
 uvicorn==0.38.0
 nanobind==2.9.2
+pytest==9.0.1
 
 # NNUE Training and CUDA detection dependencies
 torch>=2.0.0

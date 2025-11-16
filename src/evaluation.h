@@ -38,4 +38,8 @@ void order_moves(ChessBoard &board, std::vector<Move> &moves,
                  KillerMoves *killers = nullptr, int ply = 0,
                  HistoryTable *history = nullptr);
 
+// Batch evaluate multiple positions in parallel
+std::vector<int> batch_evaluate_mt(const std::vector<std::string> &fens,
+                                    int num_threads = 0);
+
 #endif // EVALUATION_H
