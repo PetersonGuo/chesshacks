@@ -58,6 +58,10 @@ class TrainingConfig:
 
     # Loss function
     loss_function: str = 'mse'  # 'mse' or 'huber'
+    
+    # Score clipping
+    eval_score_min: int = -10000  # Minimum evaluation score in centipawns (clipped)
+    eval_score_max: int = 10000  # Maximum evaluation score in centipawns (clipped)
 
     # Logging
     log_every_n_batches: int = 100

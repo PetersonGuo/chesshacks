@@ -1,6 +1,5 @@
 """
-Main training script for NNUE chess evaluation model with SPARSE encoding
-Using Stockfish NNUE-style sparse feature representation for memory efficiency
+Main training script for NNUE chess evaluation model
 """
 
 import os
@@ -16,16 +15,16 @@ from typing import List, Optional, Tuple, Dict
 
 # Handle both direct execution and package import
 try:
-    from .model import NNUEModelSparse, count_parameters
-    from .dataset import create_dataloaders_sparse, split_dataset
+    from .model import NNUEModel, count_parameters
+    from .dataset import create_dataloaders, split_dataset
     from .config import get_config, TrainingConfig
     from .download_data import download_and_process_lichess_data
     from .upload_to_hf import upload_model_to_hf
 except ImportError:
     # Add parent directory to path for direct execution
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from train.model import NNUEModelSparse, count_parameters
-    from train.dataset import create_dataloaders_sparse, split_dataset
+    from train.model import NNUEModel, count_parameters
+    from train.dataset import create_dataloaders, split_dataset
     from train.config import get_config, TrainingConfig
     from train.download_data import download_and_process_lichess_data
     from train.upload_to_hf import upload_model_to_hf
@@ -37,7 +36,7 @@ class WarmupScheduler:
     During warmup epochs, linearly increases learning rate from warmup_start_lr to target_lr.
     After warmup, delegates to the wrapped scheduler.
     """
-    def __init__(self,
+    def __init__(self, 
                  optimizer: torch.optim.Optimizer,
                  base_scheduler: Optional[torch.optim.lr_scheduler.LRScheduler],
                  warmup_epochs: int,
@@ -57,16 +56,16 @@ class WarmupScheduler:
         self.target_lr = target_lr
         self.warmup_start_lr = warmup_start_lr if warmup_start_lr is not None else 0.0
         self.current_epoch = -1  # Start at -1 so first step() sets LR for epoch 0
-
+        
         # Initialize learning rate - will be set properly on first step()
         if warmup_epochs > 0:
             for param_group in self.optimizer.param_groups:
                 param_group['lr'] = self.warmup_start_lr
-
+        
     def step(self):
         """Update learning rate for next epoch"""
         self.current_epoch += 1
-
+        
         if self.current_epoch < self.warmup_epochs:
             # Warmup phase: linear interpolation from warmup_start_lr to target_lr
             # Epoch 0: 1/warmup_epochs, Epoch 1: 2/warmup_epochs, ..., Epoch (warmup_epochs-1): warmup_epochs/warmup_epochs = target_lr
@@ -78,11 +77,11 @@ class WarmupScheduler:
             # After warmup: use base scheduler if available
             if self.base_scheduler is not None:
                 self.base_scheduler.step()
-
+    
     def get_last_lr(self):
         """Get the last computed learning rate"""
         return [group['lr'] for group in self.optimizer.param_groups]
-
+    
     def state_dict(self):
         """Return state dict for checkpointing"""
         state = {
@@ -94,7 +93,7 @@ class WarmupScheduler:
         if self.base_scheduler is not None:
             state['base_scheduler'] = self.base_scheduler.state_dict()
         return state
-
+    
     def load_state_dict(self, state_dict):
         """Load state dict from checkpoint"""
         self.current_epoch = state_dict['current_epoch']
@@ -133,11 +132,11 @@ def get_optimizer(model: torch.nn.Module, config: TrainingConfig) -> torch.optim
         raise ValueError(f"Unknown optimizer: {config.optimizer}")
 
 
-def get_scheduler(optimizer: torch.optim.Optimizer,
+def get_scheduler(optimizer: torch.optim.Optimizer, 
                   config: TrainingConfig):
     """Create learning rate scheduler based on configuration"""
     base_scheduler = None
-
+    
     if config.scheduler == 'step':
         base_scheduler = optim.lr_scheduler.StepLR(
             optimizer,
@@ -149,7 +148,7 @@ def get_scheduler(optimizer: torch.optim.Optimizer,
             optimizer,
             T_max=config.num_epochs - config.warmup_epochs  # Adjust T_max to account for warmup
         )
-
+    
     # Wrap with warmup if enabled
     if config.warmup_epochs > 0:
         return WarmupScheduler(
@@ -159,7 +158,7 @@ def get_scheduler(optimizer: torch.optim.Optimizer,
             target_lr=config.learning_rate,
             warmup_start_lr=config.warmup_start_lr
         )
-
+    
     return base_scheduler
 
 
@@ -177,11 +176,11 @@ def train_epoch(model: torch.nn.Module, train_loader: torch.utils.data.DataLoade
                 optimizer: torch.optim.Optimizer, criterion: torch.nn.Module,
                 device: torch.device, config: TrainingConfig, epoch: int) -> float:
     """
-    Train for one epoch with sparse inputs
+    Train for one epoch
 
     Args:
-        model: NNUE model with sparse encoding
-        train_loader: Training data loader with sparse collate
+        model: NNUE model
+        train_loader: Training data loader
         optimizer: Optimizer
         criterion: Loss function
         device: Device to train on
@@ -199,19 +198,17 @@ def train_epoch(model: torch.nn.Module, train_loader: torch.utils.data.DataLoade
     pbar = tqdm(train_loader, desc=f'Epoch {epoch+1}/{config.num_epochs}',
                 disable=not config.verbose)
 
-    for batch_idx, (white_indices, white_values, black_indices, black_values, targets) in enumerate(pbar):
+    for batch_idx, (white_features, black_features, targets) in enumerate(pbar):
         # Move to device
-        white_indices = white_indices.to(device)
-        white_values = white_values.to(device)
-        black_indices = black_indices.to(device)
-        black_values = black_values.to(device)
+        white_features = white_features.to(device)
+        black_features = black_features.to(device)
         targets = targets.to(device)
 
         # Zero gradients
         optimizer.zero_grad()
 
-        # Forward pass with sparse inputs
-        outputs = model(white_indices, white_values, black_indices, black_values)
+        # Forward pass
+        outputs = model(white_features, black_features)
 
         # Calculate loss
         loss = criterion(outputs, targets)
@@ -237,14 +234,14 @@ def train_epoch(model: torch.nn.Module, train_loader: torch.utils.data.DataLoade
 
 
 def validate(model: torch.nn.Module, val_loader: torch.utils.data.DataLoader,
-             criterion: torch.nn.Module, device: torch.device,
+             criterion: torch.nn.Module, device: torch.device, 
              config: TrainingConfig) -> float:
     """
-    Validate the model with sparse inputs
+    Validate the model
 
     Args:
-        model: NNUE model with sparse encoding
-        val_loader: Validation data loader with sparse collate
+        model: NNUE model
+        val_loader: Validation data loader
         criterion: Loss function
         device: Device to validate on
         config: Training configuration
@@ -258,16 +255,14 @@ def validate(model: torch.nn.Module, val_loader: torch.utils.data.DataLoader,
 
     with torch.no_grad():
         pbar = tqdm(val_loader, desc='Validating', disable=not config.verbose)
-        for white_indices, white_values, black_indices, black_values, targets in pbar:
+        for white_features, black_features, targets in pbar:
             # Move to device
-            white_indices = white_indices.to(device)
-            white_values = white_values.to(device)
-            black_indices = black_indices.to(device)
-            black_values = black_values.to(device)
+            white_features = white_features.to(device)
+            black_features = black_features.to(device)
             targets = targets.to(device)
 
             # Forward pass
-            outputs = model(white_indices, white_values, black_indices, black_values)
+            outputs = model(white_features, black_features)
 
             # Calculate loss
             loss = criterion(outputs, targets)
@@ -401,23 +396,23 @@ def load_checkpoint(
 def ensure_data_exists(config: TrainingConfig) -> bool:
     """
     Ensure training and validation data files exist, downloading if needed
-
+    
     Args:
         config: Training configuration
-
+    
     Returns:
         True if data exists or was successfully downloaded, False otherwise
     """
     train_exists = os.path.exists(config.train_data_path)
     val_exists = config.val_data_path and os.path.exists(config.val_data_path)
-
+    
     if train_exists and (not config.val_data_path or val_exists):
         print(f"Data files found:")
         print(f"  Train: {config.train_data_path}")
         if config.val_data_path:
             print(f"  Val:   {config.val_data_path}")
         return True
-
+    
     if not config.auto_download:
         print(f"Data files not found:")
         if not train_exists:
@@ -426,11 +421,11 @@ def ensure_data_exists(config: TrainingConfig) -> bool:
             print(f"  Missing: {config.val_data_path}")
         print("Set config.auto_download = True to automatically download data")
         return False
-
+    
     print("Data files not found. Downloading and processing...")
-
+    
     output_dir = os.path.dirname(config.train_data_path) or config.download_output_dir
-
+    
     download_kwargs = {
         'output_dir': output_dir,
         'year': config.download_year,
@@ -446,21 +441,21 @@ def ensure_data_exists(config: TrainingConfig) -> bool:
         'download_mode': config.download_mode,
         'skip_redownload': config.download_skip_redownload,
     }
-
+    
     try:
         output_path = download_and_process_lichess_data(**download_kwargs)
-
+        
         if not output_path:
             print("Failed to download data")
             return False
-
+        
         os.makedirs(output_dir, exist_ok=True)
-
+        
         if not train_exists:
             if config.val_data_path:
                 train_path, val_path = split_dataset(
-                    output_path,
-                    train_ratio=config.train_val_split_ratio,
+                    output_path, 
+                    train_ratio=config.train_val_split_ratio, 
                     output_dir=output_dir,
                     config=config
                 )
@@ -477,13 +472,13 @@ def ensure_data_exists(config: TrainingConfig) -> bool:
             )
             config.train_data_path = train_path
             config.val_data_path = val_path
-
+        
         print(f"Data ready:")
         print(f"  Train: {config.train_data_path}")
         if config.val_data_path:
             print(f"  Val:   {config.val_data_path}")
         return True
-
+    
     except Exception as e:
         print(f"Error downloading data: {e}")
         return False
@@ -491,29 +486,28 @@ def ensure_data_exists(config: TrainingConfig) -> bool:
 
 def train(config: TrainingConfig) -> Tuple[torch.nn.Module, Dict[str, list]]:
     """
-    Main training function with sparse encoding
+    Main training function
 
     Args:
         config: Training configuration
-
+    
     Returns:
         Tuple of (model, training_history)
     """
     if not ensure_data_exists(config):
         raise FileNotFoundError("Training data not found and could not be downloaded")
-
+    
     set_seed(config.seed)
 
     device = torch.device(config.device)
     print(f"Using device: {device}")
-    print("Using SPARSE encoding (Stockfish NNUE style)")
 
-    print("\nLoading data with sparse encoding...")
-    train_loader, val_loader = create_dataloaders_sparse(
+    print("\nLoading data...")
+    train_loader, val_loader = create_dataloaders(
         train_path=config.train_data_path,
         val_path=config.val_data_path,
         batch_size=config.batch_size,
-        num_workers=0,  # Must be 0 for sparse tensors
+        num_workers=config.num_workers,
         max_train_positions=config.max_train_positions,
         max_val_positions=config.max_val_positions
     )
@@ -522,9 +516,9 @@ def train(config: TrainingConfig) -> Tuple[torch.nn.Module, Dict[str, list]]:
     if val_loader:
         print(f"Validation batches: {len(val_loader)}")
 
-    # Create sparse model
-    print("\nCreating sparse model...")
-    model = NNUEModelSparse(
+    # Create model
+    print("\nCreating model...")
+    model = NNUEModel(
         hidden_size=config.hidden_size,
         hidden2_size=config.hidden2_size,
         hidden3_size=config.hidden3_size
@@ -555,7 +549,7 @@ def train(config: TrainingConfig) -> Tuple[torch.nn.Module, Dict[str, list]]:
         # Sync scheduler with start_epoch (scheduler was saved before step(), so we need to catch up)
         if scheduler is not None:
             # Step scheduler to match start_epoch (scheduler tracks last completed epoch)
-            while (hasattr(scheduler, 'current_epoch') and
+            while (hasattr(scheduler, 'current_epoch') and 
                    scheduler.current_epoch < start_epoch - 1):
                 scheduler.step()
 
@@ -575,14 +569,14 @@ def train(config: TrainingConfig) -> Tuple[torch.nn.Module, Dict[str, list]]:
         'val_loss': [],
         'learning_rate': []
     }
-
+    
     # Track upload threads for cleanup
     upload_threads: List[threading.Thread] = []
     has_validation = val_loader is not None
 
     last_val_loss: Optional[float] = None
     last_train_loss: Optional[float] = None
-
+    
     # Early stopping tracking
     epochs_without_improvement = 0
 
@@ -601,7 +595,7 @@ def train(config: TrainingConfig) -> Tuple[torch.nn.Module, Dict[str, list]]:
         # Log current learning rate
         current_lr = optimizer.param_groups[0]['lr']
         training_history['learning_rate'].append(current_lr)
-
+        
         # Show warmup status
         warmup_status = ""
         if config.warmup_epochs > 0 and epoch < config.warmup_epochs:
@@ -623,7 +617,7 @@ def train(config: TrainingConfig) -> Tuple[torch.nn.Module, Dict[str, list]]:
                 epochs_without_improvement = 0
             else:
                 epochs_without_improvement += 1
-
+            
             # Early stopping check
             if config.early_stopping_patience is not None and epochs_without_improvement >= config.early_stopping_patience:
                 print(f"\nEarly stopping triggered! No improvement for {config.early_stopping_patience} epochs.")
@@ -703,7 +697,7 @@ def train(config: TrainingConfig) -> Tuple[torch.nn.Module, Dict[str, list]]:
                         print("[Background] Best model upload completed!")
                     except Exception as e:
                         print(f"[Background] Warning: Failed to upload best model to Hugging Face: {e}")
-
+                
                 thread = threading.Thread(target=upload_best_model, daemon=False)
                 thread.start()
                 upload_threads.append(thread)
@@ -747,11 +741,9 @@ def main():
     config = get_config('default')
     config.__post_init__()
 
-    print("NNUE Training Configuration (SPARSE MODE)")
-    print("=" * 80)
+    print("NNUE Training Configuration")
     for field, value in config.__dict__.items():
         print(f"{field:30s}: {value}")
-    print("=" * 80)
 
     train(config)
 

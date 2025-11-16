@@ -400,7 +400,9 @@ def extract_positions_from_pgn(pgn_path: str, max_games: Optional[int] = None,
 
 
 def evaluate_position_with_stockfish(fen: str, engine: chess.engine.SimpleEngine, 
-                                     depth: int = 10) -> Optional[int]:
+                                     depth: int = 10, 
+                                     score_min: int = -10000,
+                                     score_max: int = 10000) -> Optional[int]:
     """
     Evaluate a position using Stockfish
     
@@ -408,9 +410,11 @@ def evaluate_position_with_stockfish(fen: str, engine: chess.engine.SimpleEngine
         fen: FEN string of the position
         engine: chess.engine.SimpleEngine instance
         depth: Search depth for evaluation
+        score_min: Minimum score to clip to (in centipawns)
+        score_max: Maximum score to clip to (in centipawns)
     
     Returns:
-        Evaluation score in centipawns (positive = white advantage)
+        Evaluation score in centipawns (positive = white advantage), clipped to [score_min, score_max]
     """
     try:
         board = chess.Board(fen)
@@ -421,16 +425,21 @@ def evaluate_position_with_stockfish(fen: str, engine: chess.engine.SimpleEngine
         
         if score_white.is_mate():
             mate_score = score_white.mate()
-            return 10000 if mate_score > 0 else -10000
+            raw_score = score_max if mate_score > 0 else score_min
         else:
-            return int(score_white.score())
+            raw_score = int(score_white.score())
+        
+        # Clip the score to the specified range
+        clipped_score = max(score_min, min(score_max, raw_score))
+        return clipped_score
     
     except Exception as e:
         print(f"Error evaluating position {fen}: {e}")
         return None
 
 
-def process_positions_batch(positions_batch: list, engine_path: str, depth: int = 10) -> list:
+def process_positions_batch(positions_batch: list, engine_path: str, depth: int = 10,
+                            score_min: int = -10000, score_max: int = 10000) -> list:
     """
     Process a batch of positions with Stockfish
 
@@ -438,6 +447,8 @@ def process_positions_batch(positions_batch: list, engine_path: str, depth: int 
         positions_batch: List of FEN strings
         engine_path: Path to Stockfish executable
         depth: Search depth for evaluation
+        score_min: Minimum score to clip to (in centipawns)
+        score_max: Maximum score to clip to (in centipawns)
 
     Returns:
         List of (fen, eval) tuples
@@ -446,7 +457,7 @@ def process_positions_batch(positions_batch: list, engine_path: str, depth: int 
     try:
         with chess.engine.SimpleEngine.popen_uci(engine_path) as engine:
             for fen in positions_batch:
-                eval_score = evaluate_position_with_stockfish(fen, engine, depth)
+                eval_score = evaluate_position_with_stockfish(fen, engine, depth, score_min, score_max)
                 if eval_score is not None:
                     results.append((fen, eval_score))
     except Exception as e:
@@ -563,11 +574,15 @@ def download_and_process_lichess_data(
         batches.append(batch)
     
     print(f"Processing {len(batches)} batches with {num_workers} workers...")
+    
+    # Get score clipping parameters from config
+    score_min = config.eval_score_min
+    score_max = config.eval_score_max
 
     with ThreadPoolExecutor(max_workers=num_workers) as executor:
         futures = []
         for batch in batches:
-            future = executor.submit(process_positions_batch, batch, stockfish_path, depth)
+            future = executor.submit(process_positions_batch, batch, stockfish_path, depth, score_min, score_max)
             futures.append(future)
 
         with tqdm(total=len(futures), desc="Batch progress", unit="batch") as pbar:
