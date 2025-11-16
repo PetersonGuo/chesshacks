@@ -85,7 +85,8 @@ class ChessBoardDatasetBitmap(Dataset):
                     break
 
                 item = json.loads(line)
-                self.positions.append(item['fen'])
+                fen = item['fen']
+                self.positions.append(fen)
                 eval_score = float(item['eval'])
 
                 # Clip score if clipping parameters are provided
@@ -94,6 +95,14 @@ class ChessBoardDatasetBitmap(Dataset):
                         eval_score = max(self.score_min, eval_score)
                     if self.score_max is not None:
                         eval_score = min(self.score_max, eval_score)
+
+                # Convert to side-to-move perspective using FEN turn field
+                try:
+                    parts = fen.split()
+                    if len(parts) > 1 and parts[1] == 'b':
+                        eval_score = -eval_score
+                except Exception:
+                    pass
 
                 self.evaluations.append(eval_score)
 
@@ -117,10 +126,6 @@ class ChessBoardDatasetBitmap(Dataset):
 
         # Get bitmap features
         features = BitboardFeatures.board_to_features_for_side(board, perspective=board.turn)
-
-        # If it's black to move, flip the evaluation
-        if board.turn == chess.BLACK:
-            eval_score = -eval_score
 
         # Normalize evaluation if enabled
         if self.normalize:
@@ -274,6 +279,48 @@ class WarmupScheduler:
             self.base_scheduler.load_state_dict(state_dict['base_scheduler'])
 
 
+class ConfigurableLoss(nn.Module):
+    """
+    Loss that supports optional Huber delta tuning and clamped error contributions.
+    Errors are assumed to be in normalized space; centipawn thresholds are converted
+    using eval_std when available.
+    """
+    def __init__(self, config: TrainingConfig, eval_std: Optional[float] = None):
+        super().__init__()
+        self.loss_type = config.loss_function
+        self.delta = getattr(config, 'huber_delta', 1.0)
+        clip_normalized = getattr(config, 'loss_error_clip_normalized', None)
+        clip_cp = getattr(config, 'loss_error_clip_cp', None)
+
+        if clip_normalized is not None:
+            self.clip_value = clip_normalized
+        elif clip_cp is not None and eval_std is not None and eval_std > 0:
+            self.clip_value = clip_cp / eval_std
+        else:
+            self.clip_value = None
+
+    def forward(self, outputs: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        errors = outputs - targets
+        if self.clip_value is not None:
+            errors = torch.clamp(errors, min=-self.clip_value, max=self.clip_value)
+
+        abs_errors = torch.abs(errors)
+
+        if self.loss_type == 'mse':
+            loss = errors.pow(2)
+        elif self.loss_type == 'huber':
+            delta = self.delta
+            loss = torch.where(
+                abs_errors <= delta,
+                0.5 * errors.pow(2),
+                delta * (abs_errors - 0.5 * delta)
+            )
+        else:
+            raise ValueError(f"Unknown loss function: {self.loss_type}")
+
+        return loss.mean()
+
+
 def set_seed(seed: int) -> None:
     """Set random seed for reproducibility"""
     random.seed(seed)
@@ -332,16 +379,9 @@ def get_scheduler(optimizer: torch.optim.Optimizer,
     return base_scheduler
 
 
-def get_loss_function(config: TrainingConfig) -> torch.nn.Module:
-    """Get loss function based on configuration"""
-    if config.loss_function == 'mse':
-        return nn.MSELoss()
-    elif config.loss_function == 'huber':
-        # delta=1.0 works well for normalized targets (std ~1)
-        # This makes Huber loss behave like MSE for small errors, L1 for large errors
-        return nn.HuberLoss(delta=1.0)
-    else:
-        raise ValueError(f"Unknown loss function: {config.loss_function}")
+def get_loss_function(config: TrainingConfig, eval_std: Optional[float]) -> torch.nn.Module:
+    """Get loss function with configurable clipping"""
+    return ConfigurableLoss(config, eval_std=eval_std)
 
 
 def train_epoch(model: torch.nn.Module, train_loader: torch.utils.data.DataLoader,
@@ -817,8 +857,8 @@ def train(config: TrainingConfig) -> Tuple[torch.nn.Module, Dict[str, list]]:
     optimizer = get_optimizer(model, config)
     scheduler = get_scheduler(optimizer, config)
 
-    # Loss function
-    criterion = get_loss_function(config)
+    # Loss function (with optional outlier-aware clipping)
+    criterion = get_loss_function(config, eval_std)
 
     start_epoch = 0
     best_val_loss = float('inf')

@@ -76,6 +76,9 @@ class TrainingConfig:
 
     # Loss function
     loss_function: str = 'huber'  # 'mse' or 'huber' - huber is more robust to outliers
+    huber_delta: float = 1.0  # Transition point (in normalized units) for Huber loss
+    loss_error_clip_cp: Optional[float] = 600.0  # Clip loss contribution beyond this error (centipawns). None = disabled
+    loss_error_clip_normalized: Optional[float] = None  # Direct clip in normalized units (overrides cp value)
     
     # Score clipping
     eval_score_min: int = -1500  # Minimum evaluation score in centipawns (clipped) - reduced from -10000 to focus on typical positions

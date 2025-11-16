@@ -184,6 +184,7 @@ def test_side_to_move_features():
     """Ensure side-to-move perspective reordering works"""
     board = chess.Board()
     base = BitboardFeatures.board_to_features(board).reshape(2, 6, 64)
+    mirror_idx = BitboardFeatures.MIRROR_INDICES
 
     white_first = BitboardFeatures.board_to_features_for_side(board, perspective=chess.WHITE)
     black_first = BitboardFeatures.board_to_features_for_side(board, perspective=chess.BLACK)
@@ -192,12 +193,12 @@ def test_side_to_move_features():
         (base[BitboardFeatures.WHITE], base[BitboardFeatures.BLACK])
     ).flatten()
     expected_black = torch.stack(
-        (base[BitboardFeatures.BLACK], base[BitboardFeatures.WHITE])
+        (base[BitboardFeatures.BLACK][:, mirror_idx], base[BitboardFeatures.WHITE][:, mirror_idx])
     ).flatten()
 
     assert torch.allclose(white_first, expected_white)
     assert torch.allclose(black_first, expected_black)
-    print("\n✓ Side-to-move reordering verified!")
+    print("\n✓ Side-to-move reordering (with mirroring) verified!")
 
 
 def test_virgo_layout_documentation():

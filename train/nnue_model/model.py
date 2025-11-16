@@ -55,6 +55,9 @@ class BitboardFeatures:
     NUM_COLORS = 2
     NUM_SQUARES = 64
 
+    # Precompute mirror indices for 180° rotation (side-to-move perspective)
+    MIRROR_INDICES = [chess.square_mirror(square) for square in chess.SQUARES]
+
     # Total feature size: 2 colors × 6 pieces × 64 squares = 768 features
     FEATURE_SIZE = NUM_COLORS * NUM_PIECE_TYPES * NUM_SQUARES
 
@@ -139,7 +142,8 @@ class BitboardFeatures:
 
         Returns:
             Flattened bitmap tensor of shape [768] where the first 384 features correspond to
-            the perspective player and the remaining 384 to the opponent.
+            the perspective player (board rotated so the mover is always at the bottom)
+            and the remaining 384 to the opponent.
         """
         if perspective is None:
             perspective = board.turn
@@ -150,6 +154,7 @@ class BitboardFeatures:
             ordered = bitboards[[BitboardFeatures.WHITE, BitboardFeatures.BLACK], :, :]
         else:
             ordered = bitboards[[BitboardFeatures.BLACK, BitboardFeatures.WHITE], :, :]
+            ordered = ordered[:, :, BitboardFeatures.MIRROR_INDICES]
 
         return ordered.flatten()
 
