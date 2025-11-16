@@ -113,7 +113,7 @@ num_black_pawns = int(bitboards[BLACK][PAWN].sum())
 ```python
 from train.nnue_model.model import ChessNNUEModel
 
-model = ChessNNUEModel(hidden_size=256, hidden2_size=32, hidden3_size=32)
+model = ChessNNUEModel()
 
 # Single position
 board = chess.Board()

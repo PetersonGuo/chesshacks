@@ -155,7 +155,7 @@ def test_model_compatibility():
     print("Testing Model Compatibility")
     print("=" * 80)
 
-    model = ChessNNUEModel(hidden_size=256, hidden2_size=32, hidden3_size=32)
+    model = ChessNNUEModel()
     model.eval()
 
     # Test evaluation

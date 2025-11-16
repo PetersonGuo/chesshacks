@@ -134,7 +134,7 @@ def test_model_training(temp_file):
     print("=" * 80)
 
     # Create model
-    model = ChessNNUEModel(hidden_size=256, hidden2_size=32, hidden3_size=32)
+    model = ChessNNUEModel()
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model = model.to(device)
 

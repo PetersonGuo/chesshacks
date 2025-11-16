@@ -73,7 +73,7 @@ def test_model_inference():
     print("Testing Model Inference")
     print("=" * 80)
 
-    model = ChessNNUEModel(hidden_size=256, hidden2_size=32, hidden3_size=32)
+    model = ChessNNUEModel()
     model.eval()
 
     positions = [
@@ -96,7 +96,7 @@ def test_batch_processing():
     print("Testing Batch Processing")
     print("=" * 80)
 
-    model = ChessNNUEModel(hidden_size=256, hidden2_size=32, hidden3_size=32)
+    model = ChessNNUEModel()
     model.eval()
 
     # Create batch of positions
@@ -133,7 +133,7 @@ def test_side_to_move():
     print("Testing Side-to-Move Symmetry")
     print("=" * 80)
 
-    model = ChessNNUEModel(hidden_size=256, hidden2_size=32, hidden3_size=32)
+    model = ChessNNUEModel()
     model.eval()
 
     # Same position, different side to move

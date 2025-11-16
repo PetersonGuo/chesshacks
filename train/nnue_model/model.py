@@ -162,7 +162,8 @@ class BitboardFeatures:
 class ChessNNUEModel(nn.Module):
     """
     NNUE Neural Network for chess position evaluation
-    Architecture: Bitmap features (768) → 256 → 32 → 32 → 1 (linear output)
+    Architecture: Bitmap features (768 split into friend/enemy) →
+                  512 (dual feature towers) → 64 → residual 64 → 64 → 1
 
     Uses bitmap/bitboard representation for efficient chess position encoding.
     12 bitboards (6 piece types × 2 colors) × 64 squares = 768 input features.
@@ -170,17 +171,21 @@ class ChessNNUEModel(nn.Module):
     Output is linear (no activation) to support full range of normalized evaluations.
     """
 
-    def __init__(self, hidden_size=256, hidden2_size=32, hidden3_size=32):
+    def __init__(self, hidden_size=512, hidden2_size=64, hidden3_size=64):
         super(ChessNNUEModel, self).__init__()
 
         self.input_size = BitboardFeatures.FEATURE_SIZE
+        self.half_input = self.input_size // 2
         self.hidden_size = hidden_size
 
-        # Feature transformer: converts bitmap features to dense representation
-        self.ft = nn.Linear(self.input_size, hidden_size)
+        # Feature transformers: separate learnable towers for friendly/opponent pieces
+        self.ft_friendly = nn.Linear(self.half_input, hidden_size)
+        self.ft_enemy = nn.Linear(self.half_input, hidden_size)
 
-        # Hidden layers (dense)
+        # Hidden layers (dense + residual block)
         self.fc1 = nn.Linear(hidden_size, hidden2_size)
+        self.res1 = nn.Linear(hidden2_size, hidden2_size)
+        self.res2 = nn.Linear(hidden2_size, hidden2_size)
         self.fc2 = nn.Linear(hidden2_size, hidden3_size)
         self.fc3 = nn.Linear(hidden3_size, 1)
 
@@ -209,11 +214,22 @@ class ChessNNUEModel(nn.Module):
         Returns:
             Position evaluation [batch_size, 1] (normalized)
         """
-        # Transform features
-        x = self.crelu(self.ft(x))
+        # Split perspective: first half = mover, second half = opponent
+        friendly, enemy = torch.split(x, self.half_input, dim=1)
 
-        # Pass through hidden layers
+        friendly = self.crelu(self.ft_friendly(friendly))
+        enemy = self.crelu(self.ft_enemy(enemy))
+
+        # Sum accumulators (NNUE-style)
+        x = friendly + enemy
+
+        # Dense tower with residual refinement
         x = self.crelu(self.fc1(x))
+        residual = x
+        x = self.crelu(self.res1(x))
+        x = self.res2(x)
+        x = self.crelu(x + residual)
+
         x = self.crelu(self.fc2(x))
         x = self.fc3(x)
 
@@ -257,11 +273,7 @@ def count_parameters(model: torch.nn.Module) -> int:
 
 if __name__ == "__main__":
     # Test the model
-    model = ChessNNUEModel(
-        hidden_size=256,
-        hidden2_size=32,
-        hidden3_size=32
-    )
+    model = ChessNNUEModel()
 
     print(f"NNUE Model Architecture (Virgo-style Bitboards):")
     print(f"Input size: {model.input_size:,} (2 colors × 6 pieces × 64 squares)")

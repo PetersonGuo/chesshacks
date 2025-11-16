@@ -35,7 +35,7 @@ def benchmark_model_inference(num_positions=1000, batch_size=256):
     print(f"Benchmarking Model Inference ({num_positions} positions, batch_size={batch_size})")
     print("=" * 80)
 
-    model = ChessNNUEModel(hidden_size=256, hidden2_size=32, hidden3_size=32)
+    model = ChessNNUEModel()
     model.eval()
 
     # Create random positions
@@ -87,7 +87,7 @@ def benchmark_gpu_inference(num_positions=1000, batch_size=256):
     print("=" * 80)
 
     device = torch.device('cuda')
-    model = ChessNNUEModel(hidden_size=256, hidden2_size=32, hidden3_size=32)
+    model = ChessNNUEModel()
     model = model.to(device)
     model.eval()
 
@@ -125,7 +125,7 @@ def analyze_model_size():
     print("Model Size Analysis")
     print("=" * 80)
 
-    model = ChessNNUEModel(hidden_size=256, hidden2_size=32, hidden3_size=32)
+    model = ChessNNUEModel()
 
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)

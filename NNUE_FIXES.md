@@ -70,20 +70,18 @@ After these fixes, you should see:
 ## Additional Recommendations
 
 ### Optional: Increase Model Capacity
-Current architecture: `768 → 256 → 32 → 32 → 1`
+The modern architecture is `768 → 512 → 64 → 64 → 1` with twin feature transformers and a residual refinement block.
 
-The bottleneck from 256 → 32 is quite aggressive. Consider:
+If you need an even stronger model (larger GPUs), bump to:
 ```python
-# Current (smaller, faster)
-hidden_size=256, hidden2_size=32, hidden3_size=32
+# Production (default)
+hidden_size=512, hidden2_size=64, hidden3_size=64
 
-# Recommended (better capacity)
-hidden_size=256, hidden2_size=64, hidden3_size=32
+# High-capacity
+hidden_size=768, hidden2_size=128, hidden3_size=128
 ```
 
-You can modify this in `train/config.py`:
-- For `RTX_5070_CONFIG`: Update lines 208-209
-- For `RTX_5070_QUALITY_CONFIG`: Already uses 512→64→64 (good)
+Edit `train/config.py` for your target config (`RTX_5070_CONFIG`, `quality`, etc.).
 
 ### Training Tips
 

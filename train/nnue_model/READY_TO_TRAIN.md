@@ -72,9 +72,9 @@ config = get_config('rtx5070')
 ### RTX 5070 Settings:
 - **Device**: CUDA (auto-falls back to MPS/CPU if unavailable)
 - **Batch Size**: 4096
-- **Learning Rate**: 0.001
+- **Learning Rate**: 0.0006
 - **Epochs**: 100
-- **Model**: 256 → 32 → 32 → 1 (206K params)
+- **Model**: 512 → 64 → 64 (+ residual) — 440K params
 - **Auto Download**: ✓ Enabled
 
 ## Expected Output
@@ -111,7 +111,7 @@ Loaded 90000 positions from data/train.jsonl (bitmap mode)
 Loaded 10000 positions from data/val.jsonl (bitmap mode)
 
 Creating NNUE model...
-Model parameters: 206,177
+Model parameters: 439,617
 
 Starting training for 100 epochs...
 ================================================================================

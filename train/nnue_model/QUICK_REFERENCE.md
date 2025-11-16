@@ -41,11 +41,11 @@ python train/nnue_model/train.py --fresh
 
 | Config | Batch Size | Model Size | Epochs | Best For |
 |--------|-----------|------------|--------|----------|
-| `fast` | 512 | 256→32→32 | 10 | Quick testing |
-| `rtx5070` | 4096 | 256→32→32 | 100 | Fast training |
-| `rtx5070_quality` | 2048 | 512→64→64 | 150 | Best accuracy |
-| `quality` | 256 | 512→64→64 | 200 | Production |
-| `default` | 512 | 256→32→32 | 30 | General use |
+| `fast` | 512 | 512→64→64 | 10 | Quick testing |
+| `rtx5070` | 4096 | 512→64→64 | 100 | Fast training |
+| `rtx5070_quality` | 2048 | 768→128→128 | 150 | Best accuracy |
+| `quality` | 256 | 768→128→128 | 200 | Production |
+| `default` | 512 | 512→64→64 | 30 | General use |
 
 ## Common Tasks
 
@@ -69,7 +69,7 @@ import torch
 import chess
 from train.nnue_model.model import ChessNNUEModel
 
-model = ChessNNUEModel(hidden_size=256, hidden2_size=32, hidden3_size=32)
+model = ChessNNUEModel(hidden_size=512, hidden2_size=64, hidden3_size=64)
 checkpoint = torch.load('checkpoints/best_model.pt')
 model.load_state_dict(checkpoint['model_state_dict'])
 
@@ -171,17 +171,18 @@ while true; do python train/nnue_model/train.py --no-prompt || sleep 5; done
 
 ## Model Stats
 
-**Bitmap NNUE (256→32→32)**:
-- Parameters: 206,177
-- Size: 0.79 MB
+**Bitmap NNUE (512→64→64 + residual)**:
+- Parameters: 439,617
+- Size: 1.68 MB
 - Input: 768 features (12 bitboards, re-ordered by side-to-move)
-- Speed: ~926K positions/sec (batched)
+- Dual feature towers with residual refinement
+- Speed: ~820K positions/sec (batched)
 
-**Quality NNUE (512→64→64)**:
-- Parameters: 430,785
-- Size: 1.65 MB
+**Quality NNUE (768→128→128 + residual)**:
+- Parameters: 793,473
+- Size: 3.02 MB
 - Input: 768 features (12 bitboards, re-ordered by side-to-move)
-- Speed: ~600K positions/sec (batched)
+- Designed for highest accuracy on larger GPUs
 
 ---
 

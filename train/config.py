@@ -37,9 +37,9 @@ class TrainingConfig:
     early_stopping_patience: Optional[int] = 15  # Stop if val loss doesn't improve for N epochs (None = disabled) - increased to allow more exploration
 
     # Model architecture
-    hidden_size: int = 256
-    hidden2_size: int = 32
-    hidden3_size: int = 32
+    hidden_size: int = 512
+    hidden2_size: int = 64
+    hidden3_size: int = 64
     
     # CNN model architecture (for CNN-based training)
     conv_channels: int = 64
@@ -168,11 +168,11 @@ FAST_CONFIG = TrainingConfig(
 # High-quality training
 QUALITY_CONFIG = TrainingConfig(
     batch_size=256,
-    learning_rate=0.0005,
+    learning_rate=0.0004,
     num_epochs=200,
-    hidden_size=512,
-    hidden2_size=64,
-    hidden3_size=64,
+    hidden_size=768,
+    hidden2_size=128,
+    hidden3_size=128,
     weight_decay=1e-6,
     optimizer='adam',
     scheduler='cosine',
@@ -183,7 +183,7 @@ LARGE_SCALE_CONFIG = TrainingConfig(
     batch_size=1024,
     learning_rate=0.001,
     num_epochs=100,
-    hidden_size=256,
+    hidden_size=512,
     num_workers=8,
     save_every_n_epochs=10,
 )
@@ -208,9 +208,9 @@ RTX_5070_CONFIG = TrainingConfig(
     early_stopping_patience=20,
 
     # Model architecture - balanced for speed and quality
-    hidden_size=256,
-    hidden2_size=32,
-    hidden3_size=32,
+    hidden_size=512,
+    hidden2_size=64,
+    hidden3_size=64,
 
     # Optimization
     optimizer='adam',
