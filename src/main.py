@@ -9,13 +9,53 @@ from .utils import chess_manager, GameContext
 from chess import Move
 import sys
 import os
+import subprocess
 
-# Add build directory to path so c_helpers can be imported
-build_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "build")
+# Add paths for c_helpers module
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+build_path = os.path.join(project_root, "build")
 if build_path not in sys.path:
     sys.path.insert(0, build_path)
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
 
-import c_helpers
+# Try to import c_helpers, build if necessary
+try:
+    import c_helpers
+except ModuleNotFoundError:
+    print("=" * 80)
+    print("C++ module not found - triggering automatic build...")
+    print("=" * 80)
+    
+    build_script = os.path.join(project_root, "build.sh")
+    if os.path.exists(build_script):
+        try:
+            # Run build script
+            result = subprocess.run(
+                ["/bin/bash", build_script],
+                cwd=project_root,
+                check=True,
+                capture_output=True,
+                text=True
+            )
+            print(result.stdout)
+            
+            # Try import again
+            import c_helpers
+            print("✓ Build successful - module imported")
+        except subprocess.CalledProcessError as e:
+            print(f"Build failed: {e}")
+            print("stdout:", e.stdout)
+            print("stderr:", e.stderr)
+            raise
+        except ModuleNotFoundError:
+            print("Build completed but module still not found.")
+            print("Please run: ./build.sh")
+            raise
+    else:
+        print(f"Build script not found at: {build_script}")
+        print("Please run: ./build.sh from project root")
+        raise
 
 # Import engine utilities
 from . import engine

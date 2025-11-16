@@ -638,20 +638,17 @@ int alpha_beta_optimized(
   HistoryTable *history_ptr = history ? history : &local_history;
   CounterMoveTable *counters_ptr = counters ? counters : &local_counters;
 
-  // If no threading requested, use iterative deepening with single thread
-  // Note: Parallel search with Python callbacks causes GIL contention and is
-  // slower. Parallelization is disabled until we can release/acquire GIL per
-  // evaluate() call.
-  if (num_threads <= 1 || depth <= 10) { // Effectively disable parallel for now
-    return iterative_deepening(fen, depth, alpha, beta, maximizingPlayer,
-                               evaluate, tt_ref, killers_ptr, history_ptr);
-  }
-
-  // Parallel search at root level with iterative deepening
+  // Auto-detect thread count if 0
   if (num_threads == 0) {
     num_threads = std::thread::hardware_concurrency();
     if (num_threads == 0)
       num_threads = 4;
+  }
+
+  // Use single-threaded for shallow depths or when explicitly requested
+  if (num_threads <= 1 || depth <= 2) {
+    return iterative_deepening(fen, depth, alpha, beta, maximizingPlayer,
+                               evaluate, tt_ref, killers_ptr, history_ptr);
   }
 
   // First do iterative deepening up to depth-1 to populate TT
@@ -707,19 +704,22 @@ int alpha_beta_optimized(
     return {move, score};
   };
 
-  // Launch threads for moves
+  // Launch threads for moves - batch processing for better efficiency
+  std::vector<MoveScore> results;
+  results.reserve(legal_moves.size());
+  
   for (size_t i = 0; i < legal_moves.size(); i++) {
+    // Wait for a slot to become available
     while (futures.size() >= static_cast<size_t>(num_threads)) {
+      // Efficiently wait for any future to complete
       for (auto it = futures.begin(); it != futures.end();) {
-        if (it->wait_for(std::chrono::milliseconds(0)) ==
+        if (it->wait_for(std::chrono::microseconds(100)) ==
             std::future_status::ready) {
+          results.push_back(it->get());
           it = futures.erase(it);
         } else {
           ++it;
         }
-      }
-      if (futures.size() >= static_cast<size_t>(num_threads)) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
       }
     }
 
@@ -727,14 +727,20 @@ int alpha_beta_optimized(
         std::async(std::launch::async, evaluate_move, legal_moves[i]));
   }
 
-  // Collect results
-  int best_score = maximizingPlayer ? MIN : MAX;
+  // Collect remaining results
   for (auto &future : futures) {
-    MoveScore result = future.get();
+    results.push_back(future.get());
+  }
+
+  // Find best score
+  int best_score = maximizingPlayer ? MIN : MAX;
+  for (const auto &result : results) {
     if (maximizingPlayer) {
       best_score = std::max(best_score, result.score);
+      alpha = std::max(alpha, result.score);
     } else {
       best_score = std::min(best_score, result.score);
+      beta = std::min(beta, result.score);
     }
   }
 
@@ -845,27 +851,32 @@ find_best_move(const std::string &fen, int depth,
         max_parallel = 4;
 
       // Launch parallel evaluations
+      std::vector<MoveResult> results;
+      results.reserve(legal_moves.size());
+      
       for (size_t i = 0; i < legal_moves.size(); i++) {
         while (futures.size() >= static_cast<size_t>(max_parallel)) {
           for (auto it = futures.begin(); it != futures.end();) {
-            if (it->wait_for(std::chrono::milliseconds(0)) ==
+            if (it->wait_for(std::chrono::microseconds(100)) ==
                 std::future_status::ready) {
+              results.push_back(it->get());
               it = futures.erase(it);
             } else {
               ++it;
             }
-          }
-          if (futures.size() >= static_cast<size_t>(max_parallel)) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
           }
         }
         futures.push_back(
             std::async(std::launch::async, evaluate_move, legal_moves[i]));
       }
 
-      // Collect results and find best
+      // Collect remaining results
       for (auto &future : futures) {
-        MoveResult result = future.get();
+        results.push_back(future.get());
+      }
+      
+      // Find best
+      for (const auto &result : results) {
         if ((maximizing && result.score > best_score) ||
             (!maximizing && result.score < best_score)) {
           best_score = result.score;
@@ -1319,16 +1330,13 @@ multi_pv_search(const std::string &fen, int depth, int num_lines,
       // Wait for a thread to finish if we're at capacity
       while (futures.size() >= static_cast<size_t>(max_parallel)) {
         for (auto it = futures.begin(); it != futures.end();) {
-          if (it->wait_for(std::chrono::milliseconds(0)) ==
+          if (it->wait_for(std::chrono::microseconds(100)) ==
               std::future_status::ready) {
             scored_moves.push_back(it->get());
             it = futures.erase(it);
           } else {
             ++it;
           }
-        }
-        if (futures.size() >= static_cast<size_t>(max_parallel)) {
-          std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
       }
 

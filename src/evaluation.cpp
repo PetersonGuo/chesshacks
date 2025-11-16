@@ -2,6 +2,8 @@
 #include <algorithm>
 #include <climits>
 #include <cmath>
+#include <thread>
+#include <vector>
 
 const int MIN = INT_MIN;
 const int MAX = INT_MAX;
@@ -175,6 +177,58 @@ int static_exchange_eval(ChessBoard &board, const Move &move) {
   // Queen takes pawn: 100 gain, 900 loss = -800 (if recaptured)
 
   return gain - loss; // Pessimistic: assume we'll be recaptured
+}
+
+// ============================================================================
+// BATCH EVALUATION (Multithreaded)
+// ============================================================================
+
+std::vector<int> batch_evaluate_mt(const std::vector<std::string> &fens,
+                                    int num_threads) {
+  std::vector<int> scores(fens.size());
+  
+  if (fens.empty()) {
+    return scores;
+  }
+  
+  // Auto-detect threads
+  if (num_threads == 0) {
+    num_threads = std::thread::hardware_concurrency();
+    if (num_threads == 0)
+      num_threads = 4;
+  }
+  
+  // For small batches, use single thread
+  if (fens.size() < static_cast<size_t>(num_threads) || num_threads == 1) {
+    for (size_t i = 0; i < fens.size(); i++) {
+      scores[i] = evaluate_with_pst(fens[i]);
+    }
+    return scores;
+  }
+  
+  // Divide work among threads
+  std::vector<std::thread> threads;
+  size_t chunk_size = (fens.size() + num_threads - 1) / num_threads;
+  
+  auto evaluate_chunk = [&](size_t start, size_t end) {
+    for (size_t i = start; i < end && i < fens.size(); i++) {
+      scores[i] = evaluate_with_pst(fens[i]);
+    }
+  };
+  
+  for (int t = 0; t < num_threads; t++) {
+    size_t start = t * chunk_size;
+    size_t end = std::min(start + chunk_size, fens.size());
+    if (start < fens.size()) {
+      threads.emplace_back(evaluate_chunk, start, end);
+    }
+  }
+  
+  for (auto &thread : threads) {
+    thread.join();
+  }
+  
+  return scores;
 }
 
 // ============================================================================

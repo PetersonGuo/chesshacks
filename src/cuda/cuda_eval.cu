@@ -28,7 +28,8 @@ __constant__ int d_piece_values[6] = {100, 320, 330, 500, 900, 20000};
 // ============================================================================
 
 /**
- * CUDA kernel for batch evaluation of chess positions
+ * Optimized CUDA kernel for batch evaluation of chess positions
+ * Uses shared memory for better performance and coalesced memory access
  * Each thread evaluates one position
  */
 __global__ void
@@ -40,7 +41,34 @@ batch_evaluate_kernel(const char *positions, // Flattened FEN strings
   if (idx >= num_positions)
     return;
 
-  // Get this thread's FEN string
+  // Use shared memory for piece-square tables to reduce global memory access
+  __shared__ int s_piece_values[6];
+  __shared__ int s_pawn_table[64];
+  __shared__ int s_knight_table[64];
+  __shared__ int s_bishop_table[64];
+  __shared__ int s_rook_table[64];
+  __shared__ int s_queen_table[64];
+  __shared__ int s_king_table[64];
+
+  // Load piece values into shared memory (first 6 threads)
+  if (threadIdx.x < 6) {
+    s_piece_values[threadIdx.x] = d_piece_values[threadIdx.x];
+  }
+
+  // Load piece-square tables into shared memory (all threads participate)
+  int tid = threadIdx.x;
+  if (tid < 64) {
+    s_pawn_table[tid] = d_pawn_table[tid];
+    s_knight_table[tid] = d_knight_table[tid];
+    s_bishop_table[tid] = d_bishop_table[tid];
+    s_rook_table[tid] = d_rook_table[tid];
+    s_queen_table[tid] = d_queen_table[tid];
+    s_king_table[tid] = d_king_table[tid];
+  }
+
+  __syncthreads();
+
+  // Get this thread's FEN string - coalesced memory access
   const char *fen = positions + idx * max_fen_length;
 
   int score = 0;
@@ -49,7 +77,8 @@ batch_evaluate_kernel(const char *positions, // Flattened FEN strings
   int i = 0;
 
   // Parse FEN and evaluate
-  while (fen[i] != '\0' && fen[i] != ' ') {
+  #pragma unroll 4
+  while (fen[i] != '\0' && fen[i] != ' ' && i < max_fen_length) {
     char c = fen[i];
 
     if (c == '/') {
@@ -67,42 +96,39 @@ batch_evaluate_kernel(const char *positions, // Flattened FEN strings
       // Calculate square index (flip for black)
       int pst_square = is_white ? square : (63 - square);
 
-      // Get piece type and values
+      // Get piece type and values - use shared memory
       char piece = is_white ? c : (c - 32); // Convert to uppercase
 
       switch (piece) {
       case 'P':
-        piece_value = d_piece_values[0];
-        pst_value = d_pawn_table[pst_square];
+        piece_value = s_piece_values[0];
+        pst_value = s_pawn_table[pst_square];
         break;
       case 'N':
-        piece_value = d_piece_values[1];
-        pst_value = d_knight_table[pst_square];
+        piece_value = s_piece_values[1];
+        pst_value = s_knight_table[pst_square];
         break;
       case 'B':
-        piece_value = d_piece_values[2];
-        pst_value = d_bishop_table[pst_square];
+        piece_value = s_piece_values[2];
+        pst_value = s_bishop_table[pst_square];
         break;
       case 'R':
-        piece_value = d_piece_values[3];
-        pst_value = d_rook_table[pst_square];
+        piece_value = s_piece_values[3];
+        pst_value = s_rook_table[pst_square];
         break;
       case 'Q':
-        piece_value = d_piece_values[4];
-        pst_value = d_queen_table[pst_square];
+        piece_value = s_piece_values[4];
+        pst_value = s_queen_table[pst_square];
         break;
       case 'K':
-        piece_value = d_piece_values[5];
-        pst_value = d_king_table[pst_square];
+        piece_value = s_piece_values[5];
+        pst_value = s_king_table[pst_square];
         break;
       }
 
       // Add to score (positive for white, negative for black)
-      if (is_white) {
-        score += piece_value + pst_value;
-      } else {
-        score -= piece_value + pst_value;
-      }
+      int total = piece_value + pst_value;
+      score += is_white ? total : -total;
 
       file++;
     }
@@ -199,9 +225,15 @@ bool cuda_batch_evaluate(const std::vector<std::string> &fens,
     return false;
   }
 
-  // Launch kernel
+  // Launch kernel with optimized parameters
+  // Use 256 threads per block for optimal occupancy with shared memory
+  // This allows efficient loading of piece-square tables
   int threads_per_block = 256;
   int num_blocks = (num_positions + threads_per_block - 1) / threads_per_block;
+
+  // Calculate shared memory size (for documentation/future use)
+  // 6 ints (piece values) + 6*64 ints (PST tables) = 390 ints = 1560 bytes
+  // This fits well within typical 48KB shared memory per block
 
   batch_evaluate_kernel<<<num_blocks, threads_per_block>>>(
       d_positions, d_scores, num_positions, max_fen_length);
@@ -341,8 +373,9 @@ __global__ void bitonic_sort_moves_kernel(int *scores, int *move_indices, int n,
 // ============================================================================
 
 /**
- * CUDA kernel for counting pieces of each type in multiple positions
+ * Optimized CUDA kernel for counting pieces of each type in multiple positions
  * Useful for material evaluation and endgame detection
+ * Uses registers for local counting before writing to global memory
  */
 __global__ void batch_count_pieces_kernel(
     const char *positions, // Flattened FEN strings
@@ -354,16 +387,14 @@ __global__ void batch_count_pieces_kernel(
     return;
 
   const char *fen = positions + idx * max_fen_length;
-  int *counts = piece_counts + idx * 12;
 
-  // Initialize counts to zero
-  for (int i = 0; i < 12; i++) {
-    counts[i] = 0;
-  }
+  // Use registers for local counting (much faster than global memory)
+  int counts[12] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
 
   // Parse FEN and count pieces
   int i = 0;
-  while (fen[i] != '\0' && fen[i] != ' ') {
+  #pragma unroll 4
+  while (fen[i] != '\0' && fen[i] != ' ' && i < max_fen_length) {
     char c = fen[i];
 
     if (c >= 'A' && c <= 'Z') {
@@ -413,6 +444,13 @@ __global__ void batch_count_pieces_kernel(
     }
 
     i++;
+  }
+
+  // Write results to global memory in one coalesced transaction
+  int *output = piece_counts + idx * 12;
+  #pragma unroll
+  for (int i = 0; i < 12; i++) {
+    output[i] = counts[i];
   }
 }
 

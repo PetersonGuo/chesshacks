@@ -100,6 +100,15 @@ NB_MODULE(c_helpers, m) {
         "Enhanced evaluation function using material + piece-square tables.\n"
         "Provides positional bonuses based on piece placement.");
 
+  // Batch evaluation (multithreaded CPU)
+  m.def("batch_evaluate_mt", &batch_evaluate_mt, nb::arg("fens"),
+        nb::arg("num_threads") = 0,
+        "Batch evaluate multiple positions using multithreading.\n"
+        "Much more efficient than evaluating positions one at a time.\n\n"
+        "fens: List of FEN strings to evaluate\n"
+        "num_threads: Number of threads (0 = auto-detect all available cores)\n"
+        "Returns: List of evaluation scores");
+
   // CUDA availability check
   m.def("is_cuda_available", &is_cuda_available,
         "Check if CUDA is available for GPU acceleration.\n"
