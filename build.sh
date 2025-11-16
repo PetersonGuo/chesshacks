@@ -102,10 +102,12 @@ ensure_unzip_tool() {
     fi
 }
 
-ensure_tool_via_pip "cmake" "cmake"
-ensure_tool_via_pip "ninja" "ninja"
-ensure_unzip_tool
-ensure_clang_toolchain
+# Run all tool checks in parallel for faster setup
+ensure_tool_via_pip "cmake" "cmake" &
+ensure_tool_via_pip "ninja" "ninja" &
+ensure_unzip_tool &
+ensure_clang_toolchain &
+wait  # Wait for all background jobs to complete; fails if any job fails
 
 if [[ ! -d "$SCRIPT_DIR/third_party/libtorch" ]]; then
 curl -LO https://download.pytorch.org/libtorch/cpu/libtorch-shared-with-deps-2.9.1%2Bcpu.zip
