@@ -45,7 +45,37 @@ else()
 endif()
 
 # Need Python interpreter + development headers/libs for nanobind.
-find_package(Python 3.8 COMPONENTS Interpreter Development REQUIRED)
+# nanobind requires find_package(Python ...) to be called first
+# Try to find Python with Development component first, but be flexible on macOS
+find_package(Python 3.8 COMPONENTS Interpreter Development)
+
+# If Development component not found, try to find just Interpreter and use provided paths
+if(NOT Python_Development_FOUND)
+    message(STATUS "Python Development component not found, trying Interpreter only...")
+    find_package(Python 3.8 COMPONENTS Interpreter REQUIRED)
+    
+    # Use the paths provided via CMake variables (from build.sh)
+    # Check both Python_* and Python3_* variables
+    if(DEFINED Python3_LIBRARY AND NOT DEFINED Python_LIBRARY)
+        set(Python_LIBRARY ${Python3_LIBRARY})
+        message(STATUS "Using provided Python library: ${Python_LIBRARY}")
+    elseif(DEFINED Python_LIBRARY)
+        message(STATUS "Using provided Python library: ${Python_LIBRARY}")
+    endif()
+    if(DEFINED Python3_INCLUDE_DIR AND NOT DEFINED Python_INCLUDE_DIR)
+        set(Python_INCLUDE_DIR ${Python3_INCLUDE_DIR})
+        message(STATUS "Using provided Python include: ${Python_INCLUDE_DIR}")
+    elseif(DEFINED Python_INCLUDE_DIR)
+        message(STATUS "Using provided Python include: ${Python_INCLUDE_DIR}")
+    endif()
+    
+    # Verify we have what we need
+    if(NOT Python_LIBRARY OR NOT Python_INCLUDE_DIR)
+        message(FATAL_ERROR "Python development libraries not found. Please ensure Python development headers are installed.")
+    endif()
+else()
+    message(STATUS "Python Development component found successfully")
+endif()
 
 execute_process(
     COMMAND "${Python_EXECUTABLE}" -m nanobind --cmake_dir
@@ -113,5 +143,6 @@ add_custom_command(TARGET c_helpers POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E create_symlink
         ${CMAKE_SOURCE_DIR}/tests
         ${CMAKE_BINARY_DIR}/tests
-    COMMENT "Creating symlink to tests directory"
+    || (exit 0)
+    COMMENT "Creating symlink to tests directory (optional)"
 )

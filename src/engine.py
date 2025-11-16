@@ -6,16 +6,11 @@ These are not directly needed for the game connection but provide useful
 functionality for testing and development.
 """
 
-import sys
-import os
 import time
 
-# Add build directory to path so c_helpers can be imported
-build_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "build")
-if build_path not in sys.path:
-    sys.path.insert(0, build_path)
+from .native_loader import ensure_c_helpers
 
-import c_helpers
+c_helpers = ensure_c_helpers()
 
 
 def has_cuda():
@@ -48,29 +43,18 @@ def get_cuda_status():
 
 def nnue_evaluate(fen: str) -> int:
     """
-    Placeholder evaluation function
-    TODO: Replace with actual NNUE model
-    Currently returns simple material count
+    Evaluate position using NNUE if loaded, otherwise PST evaluation
+
+    This automatically uses NNUE evaluation if a model is loaded,
+    otherwise falls back to piece-square table evaluation.
+
+    Args:
+        fen: FEN string of the position to evaluate
+
+    Returns:
+        Evaluation score in centipawns (positive = white advantage)
     """
-    piece_values = {
-        "P": 100,
-        "N": 320,
-        "B": 330,
-        "R": 500,
-        "Q": 900,
-        "K": 0,
-        "p": -100,
-        "n": -320,
-        "b": -330,
-        "r": -500,
-        "q": -900,
-        "k": 0,
-    }
-    score = 0
-    for char in fen.split()[0]:
-        if char in piece_values:
-            score += piece_values[char]
-    return score
+    return c_helpers.evaluate(fen)
 
 
 def alpha_beta_basic(

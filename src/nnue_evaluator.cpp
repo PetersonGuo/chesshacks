@@ -26,10 +26,16 @@ NNUEEvaluator::NNUEEvaluator()
       hidden_size_(0),
       hidden2_size_(0),
       hidden3_size_(0),
-      ft_weight_(nullptr),
-      ft_bias_(nullptr),
+      ft_friendly_weight_(nullptr),
+      ft_friendly_bias_(nullptr),
+      ft_enemy_weight_(nullptr),
+      ft_enemy_bias_(nullptr),
       fc1_weight_(nullptr),
       fc1_bias_(nullptr),
+      res1_weight_(nullptr),
+      res1_bias_(nullptr),
+      res2_weight_(nullptr),
+      res2_bias_(nullptr),
       fc2_weight_(nullptr),
       fc2_bias_(nullptr),
       fc3_weight_(nullptr),
@@ -41,19 +47,31 @@ NNUEEvaluator::~NNUEEvaluator() {
 }
 
 void NNUEEvaluator::free_memory() {
-    delete[] ft_weight_;
-    delete[] ft_bias_;
+    delete[] ft_friendly_weight_;
+    delete[] ft_friendly_bias_;
+    delete[] ft_enemy_weight_;
+    delete[] ft_enemy_bias_;
     delete[] fc1_weight_;
     delete[] fc1_bias_;
+    delete[] res1_weight_;
+    delete[] res1_bias_;
+    delete[] res2_weight_;
+    delete[] res2_bias_;
     delete[] fc2_weight_;
     delete[] fc2_bias_;
     delete[] fc3_weight_;
     delete[] fc3_bias_;
 
-    ft_weight_ = nullptr;
-    ft_bias_ = nullptr;
+    ft_friendly_weight_ = nullptr;
+    ft_friendly_bias_ = nullptr;
+    ft_enemy_weight_ = nullptr;
+    ft_enemy_bias_ = nullptr;
     fc1_weight_ = nullptr;
     fc1_bias_ = nullptr;
+    res1_weight_ = nullptr;
+    res1_bias_ = nullptr;
+    res2_weight_ = nullptr;
+    res2_bias_ = nullptr;
     fc2_weight_ = nullptr;
     fc2_bias_ = nullptr;
     fc3_weight_ = nullptr;
@@ -64,12 +82,19 @@ void NNUEEvaluator::allocate_memory() {
     // Free any existing memory
     free_memory();
 
-    // Allocate new memory
-    ft_weight_ = new float[hidden_size_ * INPUT_SIZE];
-    ft_bias_ = new float[hidden_size_];
+    // Allocate new memory for dual feature transformers
+    ft_friendly_weight_ = new float[hidden_size_ * HALF_INPUT_SIZE];
+    ft_friendly_bias_ = new float[hidden_size_];
+    ft_enemy_weight_ = new float[hidden_size_ * HALF_INPUT_SIZE];
+    ft_enemy_bias_ = new float[hidden_size_];
 
     fc1_weight_ = new float[hidden2_size_ * hidden_size_];
     fc1_bias_ = new float[hidden2_size_];
+
+    res1_weight_ = new float[hidden2_size_ * hidden2_size_];
+    res1_bias_ = new float[hidden2_size_];
+    res2_weight_ = new float[hidden2_size_ * hidden2_size_];
+    res2_bias_ = new float[hidden2_size_];
 
     fc2_weight_ = new float[hidden3_size_ * hidden2_size_];
     fc2_bias_ = new float[hidden3_size_];
@@ -96,8 +121,8 @@ bool NNUEEvaluator::load_model(const std::string& model_path) {
     // Read version
     uint32_t version;
     file.read(reinterpret_cast<char*>(&version), sizeof(uint32_t));
-    if (version != 1) {
-        std::cerr << "Error: Unsupported NNUE model version: " << version << std::endl;
+    if (version != 2) {
+        std::cerr << "Error: Unsupported NNUE model version: " << version << " (expected 2)" << std::endl;
         return false;
     }
 
@@ -112,7 +137,7 @@ bool NNUEEvaluator::load_model(const std::string& model_path) {
     hidden3_size_ = static_cast<int>(hidden3_size);
 
     std::cout << "Loading NNUE model from: " << model_path << std::endl;
-    std::cout << "  Architecture: 768 → " << hidden_size_ << " → "
+    std::cout << "  Architecture: 768 (384+384) → " << hidden_size_ << " → "
               << hidden2_size_ << " → " << hidden3_size_ << " → 1" << std::endl;
 
     // Allocate memory for weights
@@ -131,13 +156,30 @@ bool NNUEEvaluator::load_model(const std::string& model_path) {
         return true;
     };
 
-    // Read all layers
-    if (!read_layer("ft", ft_weight_, hidden_size_ * INPUT_SIZE, ft_bias_, hidden_size_)) {
+    // Read all layers in order
+    if (!read_layer("ft_friendly", ft_friendly_weight_, hidden_size_ * HALF_INPUT_SIZE,
+                    ft_friendly_bias_, hidden_size_)) {
+        free_memory();
+        return false;
+    }
+
+    if (!read_layer("ft_enemy", ft_enemy_weight_, hidden_size_ * HALF_INPUT_SIZE,
+                    ft_enemy_bias_, hidden_size_)) {
         free_memory();
         return false;
     }
 
     if (!read_layer("fc1", fc1_weight_, hidden2_size_ * hidden_size_, fc1_bias_, hidden2_size_)) {
+        free_memory();
+        return false;
+    }
+
+    if (!read_layer("res1", res1_weight_, hidden2_size_ * hidden2_size_, res1_bias_, hidden2_size_)) {
+        free_memory();
+        return false;
+    }
+
+    if (!read_layer("res2", res2_weight_, hidden2_size_ * hidden2_size_, res2_bias_, hidden2_size_)) {
         free_memory();
         return false;
     }
@@ -237,30 +279,68 @@ void NNUEEvaluator::dense_layer(const float* input, int input_size,
 
 float NNUEEvaluator::forward(const float* input) const {
     // Allocate temporary buffers for intermediate activations
-    float* hidden1 = new float[hidden_size_];
-    float* hidden2 = new float[hidden2_size_];
-    float* hidden3 = new float[hidden3_size_];
+    float* friendly = new float[hidden_size_];
+    float* enemy = new float[hidden_size_];
+    float* accumulated = new float[hidden_size_];
+    float* hidden1 = new float[hidden2_size_];
+    float* residual = new float[hidden2_size_];
+    float* res_out = new float[hidden2_size_];
+    float* hidden2 = new float[hidden3_size_];
     float output;
 
-    // Feature transformer: 768 → hidden_size
-    dense_layer(input, INPUT_SIZE, ft_weight_, ft_bias_, hidden1, hidden_size_);
-    clipped_relu(hidden1, hidden_size_);
+    // Split input: first 384 = friendly (mover's pieces), last 384 = enemy (opponent's pieces)
+    const float* friendly_input = input;
+    const float* enemy_input = input + HALF_INPUT_SIZE;
+
+    // Dual feature transformers: 384 → hidden_size each
+    dense_layer(friendly_input, HALF_INPUT_SIZE, ft_friendly_weight_, ft_friendly_bias_,
+                friendly, hidden_size_);
+    clipped_relu(friendly, hidden_size_);
+
+    dense_layer(enemy_input, HALF_INPUT_SIZE, ft_enemy_weight_, ft_enemy_bias_,
+                enemy, hidden_size_);
+    clipped_relu(enemy, hidden_size_);
+
+    // Sum accumulators (NNUE-style)
+    for (int i = 0; i < hidden_size_; i++) {
+        accumulated[i] = friendly[i] + enemy[i];
+    }
 
     // Hidden layer 1: hidden_size → hidden2_size
-    dense_layer(hidden1, hidden_size_, fc1_weight_, fc1_bias_, hidden2, hidden2_size_);
-    clipped_relu(hidden2, hidden2_size_);
+    dense_layer(accumulated, hidden_size_, fc1_weight_, fc1_bias_, hidden1, hidden2_size_);
+    clipped_relu(hidden1, hidden2_size_);
+
+    // Residual block
+    std::copy(hidden1, hidden1 + hidden2_size_, residual);  // Save for skip connection
+
+    // res1: hidden2_size → hidden2_size
+    dense_layer(hidden1, hidden2_size_, res1_weight_, res1_bias_, res_out, hidden2_size_);
+    clipped_relu(res_out, hidden2_size_);
+
+    // res2: hidden2_size → hidden2_size (no activation before skip connection)
+    dense_layer(res_out, hidden2_size_, res2_weight_, res2_bias_, res_out, hidden2_size_);
+
+    // Add skip connection and apply activation
+    for (int i = 0; i < hidden2_size_; i++) {
+        res_out[i] += residual[i];
+    }
+    clipped_relu(res_out, hidden2_size_);
 
     // Hidden layer 2: hidden2_size → hidden3_size
-    dense_layer(hidden2, hidden2_size_, fc2_weight_, fc2_bias_, hidden3, hidden3_size_);
-    clipped_relu(hidden3, hidden3_size_);
+    dense_layer(res_out, hidden2_size_, fc2_weight_, fc2_bias_, hidden2, hidden3_size_);
+    clipped_relu(hidden2, hidden3_size_);
 
     // Output layer: hidden3_size → 1 (linear, no activation)
-    dense_layer(hidden3, hidden3_size_, fc3_weight_, fc3_bias_, &output, 1);
+    dense_layer(hidden2, hidden3_size_, fc3_weight_, fc3_bias_, &output, 1);
 
     // Clean up
+    delete[] friendly;
+    delete[] enemy;
+    delete[] accumulated;
     delete[] hidden1;
+    delete[] residual;
+    delete[] res_out;
     delete[] hidden2;
-    delete[] hidden3;
 
     return output;
 }

@@ -57,18 +57,24 @@ def export_model_to_binary(model_path: str, output_path: str):
         # Assume it's directly the state dict or model
         state_dict = checkpoint.state_dict() if hasattr(checkpoint, 'state_dict') else checkpoint
 
+    # Handle models with _orig_mod. prefix (from torch.compile)
+    # Remove the prefix if present
+    if any(k.startswith('_orig_mod.') for k in state_dict.keys()):
+        print("Detected _orig_mod. prefix (from torch.compile), removing...")
+        state_dict = {k.replace('_orig_mod.', ''): v for k, v in state_dict.items()}
+
     # Create model and load weights
     # Try to infer hidden sizes from state dict
-    ft_weight_shape = state_dict['ft.weight'].shape
+    ft_friendly_weight_shape = state_dict['ft_friendly.weight'].shape
     fc1_weight_shape = state_dict['fc1.weight'].shape
     fc2_weight_shape = state_dict['fc2.weight'].shape
 
-    hidden_size = ft_weight_shape[0]  # Output size of ft layer
+    hidden_size = ft_friendly_weight_shape[0]  # Output size of ft_friendly layer
     hidden2_size = fc1_weight_shape[0]  # Output size of fc1 layer
     hidden3_size = fc2_weight_shape[0]  # Output size of fc2 layer
 
     print(f"Model architecture:")
-    print(f"  Input size: 768 (bitboard features)")
+    print(f"  Input size: 768 (384+384 bitboard features)")
     print(f"  Hidden size: {hidden_size}")
     print(f"  Hidden2 size: {hidden2_size}")
     print(f"  Hidden3 size: {hidden3_size}")
@@ -90,8 +96,8 @@ def export_model_to_binary(model_path: str, output_path: str):
         # Write magic number
         f.write(b'NNUE')
 
-        # Write version
-        f.write(struct.pack('<I', 1))  # Version 1
+        # Write version 2 (dual feature transformers + residual)
+        f.write(struct.pack('<I', 2))  # Version 2
 
         # Write architecture (hidden sizes)
         f.write(struct.pack('<I', hidden_size))
@@ -111,9 +117,12 @@ def export_model_to_binary(model_path: str, output_path: str):
             # Write biases
             f.write(bias.astype('float32').tobytes())
 
-        # Write all layers in order
-        write_layer("Feature Transformer (ft)", "ft.weight", "ft.bias")
+        # Write all layers in order (dual FT + residual architecture)
+        write_layer("Feature Transformer Friendly (ft_friendly)", "ft_friendly.weight", "ft_friendly.bias")
+        write_layer("Feature Transformer Enemy (ft_enemy)", "ft_enemy.weight", "ft_enemy.bias")
         write_layer("Hidden Layer 1 (fc1)", "fc1.weight", "fc1.bias")
+        write_layer("Residual Layer 1 (res1)", "res1.weight", "res1.bias")
+        write_layer("Residual Layer 2 (res2)", "res2.weight", "res2.bias")
         write_layer("Hidden Layer 2 (fc2)", "fc2.weight", "fc2.bias")
         write_layer("Output Layer (fc3)", "fc3.weight", "fc3.bias")
 
@@ -122,8 +131,11 @@ def export_model_to_binary(model_path: str, output_path: str):
 
     # Verify the export by checking file size
     expected_params = (
-        768 * hidden_size + hidden_size +  # ft
+        384 * hidden_size + hidden_size +  # ft_friendly
+        384 * hidden_size + hidden_size +  # ft_enemy
         hidden_size * hidden2_size + hidden2_size +  # fc1
+        hidden2_size * hidden2_size + hidden2_size +  # res1
+        hidden2_size * hidden2_size + hidden2_size +  # res2
         hidden2_size * hidden3_size + hidden3_size +  # fc2
         hidden3_size * 1 + 1  # fc3
     )

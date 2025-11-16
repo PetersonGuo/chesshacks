@@ -19,6 +19,39 @@
 namespace nb = nanobind;
 
 // ============================================================================
+// HELPER: Safe evaluate call with GIL handling
+// ============================================================================
+
+// Wrapper to safely call Python evaluate callback with GIL
+// This ensures the GIL is held when calling Python callbacks from C++ threads
+// Note: gil_scoped_acquire is reference-counted and safe to use even if GIL is already held
+inline int safe_evaluate(const std::function<int(const std::string &)> &evaluate,
+                         const std::string &fen) {
+  // Acquire GIL before calling Python callback
+  // This is safe even if GIL is already held (nanobind uses reference counting)
+  nb::gil_scoped_acquire gil;
+  
+  // Call the Python callback with exception handling
+  // If the callback raises an exception, convert it to a C++ exception
+  try {
+    return evaluate(fen);
+  } catch (const nb::python_error &e) {
+    // Python exception occurred - convert to error message
+    std::cerr << "Error in Python evaluate callback: " << e.what() << std::endl;
+    // Return a neutral score on error
+    return 0;
+  } catch (const std::exception &e) {
+    // C++ exception occurred
+    std::cerr << "Error in evaluate callback: " << e.what() << std::endl;
+    return 0;
+  } catch (...) {
+    // Unknown exception
+    std::cerr << "Unknown error in evaluate callback" << std::endl;
+    return 0;
+  }
+}
+
+// ============================================================================
 // QUIESCENCE SEARCH
 // ============================================================================
 
@@ -29,12 +62,12 @@ int quiescence_search(ChessBoard &board, int alpha, int beta,
                       int q_depth, int max_q_depth) {
   // Limit quiescence depth to prevent infinite recursion
   if (q_depth >= max_q_depth) {
-    return evaluate(board.to_fen());
+    return safe_evaluate(evaluate, board.to_fen());
   }
 
   // Stand-pat evaluation
   std::string fen = board.to_fen();
-  int stand_pat = evaluate(fen);
+  int stand_pat = safe_evaluate(evaluate, fen);
 
   if (maximizingPlayer) {
     if (stand_pat >= beta) {
@@ -106,7 +139,7 @@ int alpha_beta_basic(const std::string &fen, int depth, int alpha, int beta,
                      bool maximizingPlayer,
                      const std::function<int(const std::string &)> &evaluate) {
   if (depth == 0) {
-    return evaluate(fen);
+    return safe_evaluate(evaluate, fen);
   }
 
   ChessBoard board(fen);
@@ -210,7 +243,7 @@ static int alpha_beta_internal(
 
   // Razoring - prune at low depths when evaluation is far below alpha
   if (!board.is_check() && depth <= 3 && depth > 0) {
-    int static_eval = evaluate(fen);
+    int static_eval = safe_evaluate(evaluate, fen);
     int razor_margin = 300 * depth; // More aggressive at lower depths
 
     if (static_eval + razor_margin < alpha) {
@@ -233,7 +266,7 @@ static int alpha_beta_internal(
       tt.store(fen, 0, q_score, EXACT, "");
       return q_score;
     } else {
-      int score = evaluate(fen);
+      int score = safe_evaluate(evaluate, fen);
       tt.store(fen, 0, score, EXACT, "");
       return score;
     }
@@ -346,7 +379,7 @@ static int alpha_beta_internal(
     int static_eval = 0;
 
     if (depth <= 6 && !board.is_check()) {
-      static_eval = evaluate(fen);
+      static_eval = safe_evaluate(evaluate, fen);
       futility_margin = 100 + 50 * depth; // Depth 1: 150, Depth 6: 400
       use_futility = true;
     }
@@ -459,7 +492,7 @@ static int alpha_beta_internal(
     int static_eval = 0;
 
     if (depth <= 6 && !board.is_check()) {
-      static_eval = evaluate(fen);
+      static_eval = safe_evaluate(evaluate, fen);
       futility_margin = 100 + 50 * depth;
       use_futility = true;
     }

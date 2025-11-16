@@ -75,18 +75,27 @@ private:
 
     // Model architecture
     static constexpr int INPUT_SIZE = 768;  // 2 colors × 6 pieces × 64 squares
+    static constexpr int HALF_INPUT_SIZE = 384;  // Split for friend/enemy
     int hidden_size_;
     int hidden2_size_;
     int hidden3_size_;
 
     // Layer weights and biases (stored as 1D arrays for efficiency)
-    // Feature transformer (ft): 768 → hidden_size
-    float* ft_weight_;      // [hidden_size, 768]
-    float* ft_bias_;        // [hidden_size]
+    // Dual feature transformers: 384 → hidden_size each
+    float* ft_friendly_weight_;  // [hidden_size, 384]
+    float* ft_friendly_bias_;    // [hidden_size]
+    float* ft_enemy_weight_;     // [hidden_size, 384]
+    float* ft_enemy_bias_;       // [hidden_size]
 
     // Hidden layer 1 (fc1): hidden_size → hidden2_size
     float* fc1_weight_;     // [hidden2_size, hidden_size]
     float* fc1_bias_;       // [hidden2_size]
+
+    // Residual layers
+    float* res1_weight_;    // [hidden2_size, hidden2_size]
+    float* res1_bias_;      // [hidden2_size]
+    float* res2_weight_;    // [hidden2_size, hidden2_size]
+    float* res2_bias_;      // [hidden2_size]
 
     // Hidden layer 2 (fc2): hidden2_size → hidden3_size
     float* fc2_weight_;     // [hidden3_size, hidden2_size]

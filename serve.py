@@ -12,6 +12,20 @@ from src import main
 app = FastAPI()
 
 
+@app.on_event("startup")
+async def preload_engine():
+    """Ensure the NNUE model and engine state are ready before the first move."""
+    try:
+        loaded = main.load_nnue_model()
+        if loaded:
+            chess_manager.call_reset()
+            print("NNUE model preloaded at startup")
+        else:
+            print("NNUE model not available during startup preload")
+    except Exception as exc:
+        print(f"Failed to preload NNUE model: {exc}")
+
+
 @app.post("/")
 async def root():
     return JSONResponse(content={"running": True})

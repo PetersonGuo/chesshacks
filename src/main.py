@@ -7,68 +7,24 @@ chess_manager decorator system for connecting to the game server.
 
 import math
 import os
-import subprocess
-import sys
 from typing import Dict
 
 import chess
 from chess import Move
 
+from .native_loader import ensure_c_helpers
 from .utils import GameContext, chess_manager
 
-# Add paths for c_helpers module
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-build_path = os.path.join(project_root, "build")
-if build_path not in sys.path:
-    sys.path.insert(0, build_path)
-if project_root not in sys.path:
-    sys.path.insert(0, project_root)
-
-# Try to import c_helpers, build if necessary
-try:
-    import c_helpers
-except ModuleNotFoundError:
-    print("=" * 80)
-    print("C++ module not found - triggering automatic build...")
-    print("=" * 80)
-
-    build_script = os.path.join(project_root, "build.sh")
-    if os.path.exists(build_script):
-        try:
-            # Run build script
-            result = subprocess.run(
-                ["/bin/bash", build_script],
-                cwd=project_root,
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-            print(result.stdout)
-
-            # Try import again
-            import c_helpers
-
-            print("✓ Build successful - module imported")
-        except subprocess.CalledProcessError as e:
-            print(f"Build failed: {e}")
-            print("stdout:", e.stdout)
-            print("stderr:", e.stderr)
-            raise
-        except ModuleNotFoundError:
-            print("Build completed but module still not found.")
-            print("Please run: ./build.sh")
-            raise
-    else:
-        print(f"Build script not found at: {build_script}")
-        print("Please run: ./build.sh from project root")
-        raise
+c_helpers = ensure_c_helpers()
 
 # Import engine utilities
 from . import engine
 
 # Global configuration
-SEARCH_DEPTH = 5  # Depth 5 averages ~200-1200ms, safe for 1-minute games
-NUM_THREADS = 0  # 0 = auto-detect CPU cores
+SEARCH_DEPTH = 4  # Depth 5 averages ~200-1200ms, safe for 1-minute games
+NUM_THREADS = 1  # 1 = single-threaded (0 = auto-detect CPU cores) - using 1 to avoid GIL issues
+PROBABILITY_TEMPERATURE = 1.0  # Lower = sharper distribution
 
 # Create persistent C++ resources (reused across moves)
 transposition_table = c_helpers.TranspositionTable()
@@ -78,55 +34,82 @@ history_table = c_helpers.HistoryTable()
 # Detect CUDA at startup
 USE_CUDA = engine.has_cuda()
 
+# Initialize NNUE model if available
+NNUE_MODEL_PATH = os.path.join(project_root, "train", "nnue_model", "checkpoints", "best_model.bin")
+NNUE_LOADED = False
+
+
+def load_nnue_model() -> bool:
+    """Load the NNUE model if it is available and not already loaded."""
+    global NNUE_LOADED
+
+    if NNUE_LOADED:
+        return True
+
+    if not os.path.exists(NNUE_MODEL_PATH):
+        print(f"NNUE model not found at {NNUE_MODEL_PATH}")
+        return False
+
+    try:
+        NNUE_LOADED = c_helpers.init_nnue(NNUE_MODEL_PATH)
+        if not NNUE_LOADED:
+            print(f"Warning: Failed to load NNUE model from {NNUE_MODEL_PATH}")
+    except Exception as e:
+        print(f"Error loading NNUE model: {e}")
+        NNUE_LOADED = False
+
+    return NNUE_LOADED
+
+
+load_nnue_model()
+
 print("Chess Engine initialized:")
 print(f"  - CUDA available: {USE_CUDA}")
 if USE_CUDA:
     print(f"  - CUDA info: {engine.get_cuda_status()}")
+print(f"  - NNUE loaded: {NNUE_LOADED}")
+if NNUE_LOADED:
+    print(f"  - NNUE model: {NNUE_MODEL_PATH}")
 print(f"  - Search depth: {SEARCH_DEPTH}")
 print(f"  - Threads: {NUM_THREADS if NUM_THREADS > 0 else 'auto'}")
 
 
 def _build_probability_distribution(fen: str) -> Dict[Move, float]:
-    """Use multi-PV search to construct a probability distribution over moves."""
+    """
+    Build a lightweight probability distribution using Python-only heuristics.
+
+    The previous implementation relied on the multi-PV search in the C++ engine,
+    but that path was prone to native crashes on some environments. To keep the
+    devtools stable we approximate the distribution by rewarding captures,
+    checks, and castling moves. This is sufficient for debugging/visualization
+    without invoking the unstable multi-PV entrypoint.
+    """
     board_snapshot = chess.Board(fen)
-    legal_moves = set(board_snapshot.generate_legal_moves())
+    legal_moves = list(board_snapshot.generate_legal_moves())
     if not legal_moves:
         raise ValueError("No legal moves available for probability distribution")
 
-    max_lines = min(5, len(legal_moves))
     score_map: Dict[Move, float] = {}
-
-    try:
-        pv_lines = c_helpers.multi_pv_search(
-            fen,
-            SEARCH_DEPTH,
-            max_lines,
-            engine.nnue_evaluate,
-            transposition_table,
-            NUM_THREADS,
-            killer_moves,
-            history_table,
-            c_helpers.CounterMoveTable(),
-        )
-
-        for line in pv_lines:
-            try:
-                move = Move.from_uci(line.uci_move)
-            except ValueError:
-                continue
-            if move in legal_moves:
-                score_map[move] = line.score
-    except Exception as exc:
-        print(f"multi_pv_search failed ({exc}); falling back to deterministic move")
+    for move in legal_moves:
+        score = 1.0
+        if board_snapshot.is_capture(move):
+            score += 2.0
+        if board_snapshot.gives_check(move):
+            score += 1.5
+        if board_snapshot.is_castling(move):
+            score += 0.5
+        if board_snapshot.is_en_passant(move):
+            score += 0.25
+        score_map[move] = score
 
     return score_map
 
 
 @chess_manager.entrypoint
-def make_move(ctx: GameContext) -> dict[Move, float]:
+def make_move(ctx: GameContext) -> Move:
     """
     Main entrypoint - called every time the engine needs to make a move.
-    Returns a probability distribution over legal moves (dict[Move, float]).
+    Returns the chosen Move while logging the probability distribution for UI.
     """
     print(f"Thinking... (depth={SEARCH_DEPTH})")
 
@@ -175,21 +158,21 @@ def make_move(ctx: GameContext) -> dict[Move, float]:
         best_move = legal_moves[0]
 
     score_map = _build_probability_distribution(ctx.board.fen())
-    if best_move not in score_map:
-        score_map[best_move] = 0.0
-
     if not score_map:
         score_map = {best_move: 1.0}
+    else:
+        score_map[best_move] = score_map.get(best_move, 0.0) + 3.0
 
     max_score = max(score_map.values())
+    temperature = PROBABILITY_TEMPERATURE if PROBABILITY_TEMPERATURE > 0 else 1.0
     exp_scores = {
-        move: math.exp((score - max_score) / 200.0) for move, score in score_map.items()
+        move: math.exp((score - max_score) / temperature) for move, score in score_map.items()
     }
     total = sum(exp_scores.values())
     probabilities = {move: value / total for move, value in exp_scores.items()}
     ctx.logProbabilities(probabilities)
 
-    return probabilities
+    return best_move
 
 
 @chess_manager.reset
