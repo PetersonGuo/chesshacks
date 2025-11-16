@@ -10,6 +10,7 @@ from __future__ import annotations
 import importlib
 import subprocess
 import sys
+import os
 from functools import lru_cache
 from pathlib import Path
 
@@ -43,14 +44,29 @@ def ensure_c_helpers():
         print("=" * 80)
 
         # Run the build script and stream its output so the user can diagnose failures.
+        env = os.environ.copy()
+        python_exe = sys.executable
+        python_dir = os.path.dirname(python_exe)
+        path_value = env.get("PATH", "")
+        env["PATH"] = f"{python_dir}{os.pathsep}{path_value}" if path_value else python_dir
+        env["PYTHON_BIN"] = python_exe
+        env.setdefault("PYTHON_EXECUTABLE", python_exe)
+        env.setdefault("PYTHON", python_exe)
+
+        base_prefix = getattr(sys, "base_prefix", sys.prefix)
+        if sys.prefix and sys.prefix != base_prefix:
+            env["VIRTUAL_ENV"] = sys.prefix
+
         subprocess.run(
             ["/bin/bash", str(BUILD_SCRIPT)],
             cwd=str(PROJECT_ROOT),
             check=True,
+            env=env,
         )
 
         # After a successful build, try importing again.
         _ensure_sys_path()
+        importlib.invalidate_caches()
         return importlib.import_module("c_helpers")
 
 

@@ -11,7 +11,11 @@ BUILD_DIR="$SCRIPT_DIR/build"
 if command -v nproc &>/dev/null; then
     NUM_CORES=$(nproc)
 elif command -v sysctl &>/dev/null; then
-    NUM_CORES=$(sysctl -n hw.ncpu)
+    if NUM_CORES=$(sysctl -n hw.ncpu 2>/dev/null); then
+        :
+    else
+        NUM_CORES=4
+    fi
 else
     NUM_CORES=4
 fi
@@ -24,13 +28,16 @@ echo ""
 
 cd "$SCRIPT_DIR"
 
-PYTHON_BIN=$(command -v python3)
-PYTHON_ROOT=$(python3 -c "import sys, pathlib; print(pathlib.Path(sys.executable).parent.parent)")
-PYTHON_INCLUDE=$(python3 -c "import sysconfig; print(sysconfig.get_path('include'))")
+if [[ -z "${PYTHON_BIN:-}" ]]; then
+    PYTHON_BIN=$(command -v python3)
+fi
+
+PYTHON_ROOT=$("$PYTHON_BIN" -c "import sys, pathlib; print(pathlib.Path(sys.executable).parent.parent)")
+PYTHON_INCLUDE=$("$PYTHON_BIN" -c "import sysconfig; print(sysconfig.get_path('include'))")
 
 # Detect Python library - handle both .so (Linux) and .dylib (macOS) extensions
 # Also handle framework-based installations on macOS
-PYTHON_LIBRARY=$(python3 -c "
+PYTHON_LIBRARY=$("$PYTHON_BIN" -c "
 import sysconfig, pathlib, platform
 
 libdir = pathlib.Path(sysconfig.get_config_var('LIBDIR'))
@@ -73,7 +80,7 @@ echo "Installing Python dependencies from requirements.txt..."
 # Check if we're in a virtual environment
 if [[ -z "${VIRTUAL_ENV:-}" ]]; then
     # Not in venv, try to install with --user or skip if it fails
-    if ! python3 -m pip install --user -r "$SCRIPT_DIR/requirements.txt" 2>/dev/null; then
+    if ! "$PYTHON_BIN" -m pip install --user -r "$SCRIPT_DIR/requirements.txt" 2>/dev/null; then
         echo "⚠ Warning: Failed to install requirements (may already be installed or need venv)"
         echo "Continuing with build..."
     else
@@ -81,7 +88,7 @@ if [[ -z "${VIRTUAL_ENV:-}" ]]; then
     fi
 else
     # In venv, normal install
-    if ! python3 -m pip install -r "$SCRIPT_DIR/requirements.txt"; then
+    if ! "$PYTHON_BIN" -m pip install -r "$SCRIPT_DIR/requirements.txt"; then
         echo "⚠ Warning: Failed to install requirements (may already be installed)"
         echo "Continuing with build..."
     else
@@ -128,7 +135,7 @@ fi
 echo "Build successful: $SO_FILE"
 echo ""
 echo "Verifying module can be imported..."
-if python3 -c "import sys; sys.path.insert(0, '$BUILD_DIR'); import c_helpers; print('✓ Module imported successfully')" 2>/dev/null; then
+if "$PYTHON_BIN" -c "import sys; sys.path.insert(0, '$BUILD_DIR'); import c_helpers; print('✓ Module imported successfully')" 2>/dev/null; then
     echo "✓ Build verification passed"
 else
     echo "⚠ Warning: Module built but import verification failed."
@@ -140,4 +147,3 @@ echo "Build Complete!"
 echo "=================================================="
 echo "Module location: $SO_FILE"
 echo ""
-
