@@ -7,6 +7,18 @@ import copy
 from dataclasses import dataclass
 from typing import Optional
 
+# Check device availability once at module level
+try:
+    import torch
+    _cuda_available = torch.cuda.is_available()
+    _mps_available = torch.backends.mps.is_available() if hasattr(torch.backends, 'mps') else False
+except ImportError:
+    _cuda_available = False
+    _mps_available = False
+
+# Track if warnings have been printed
+_device_warning_printed = False
+
 
 @dataclass
 class TrainingConfig:
@@ -17,20 +29,26 @@ class TrainingConfig:
     val_data_path: str = 'data/val.jsonl'
 
     # Training parameters
-    batch_size: int = 256
-    learning_rate: float = 0.003  # Higher LR for faster initial learning (was 0.001)
-    num_epochs: int = 50  # Reduced from 300 - with ~89k positions, 50 epochs is more appropriate
-    weight_decay: float = 1e-5
+    batch_size: int = 512  # Increased for better GPU utilization
+    learning_rate: float = 0.0005  # Reduced further to help with overfitting and improve generalization
+    num_epochs: int = 30
+    weight_decay: float = 1e-4  # Increased from 1e-5 to help with overfitting
     max_grad_norm: Optional[float] = 1.0  # Gradient clipping to prevent explosion (None = disabled)
-    early_stopping_patience: Optional[int] = 10  # Stop if val loss doesn't improve for N epochs (None = disabled)
+    early_stopping_patience: Optional[int] = 15  # Stop if val loss doesn't improve for N epochs (None = disabled) - increased to allow more exploration
 
     # Model architecture
     hidden_size: int = 256
     hidden2_size: int = 32
     hidden3_size: int = 32
+    
+    # CNN model architecture (for CNN-based training)
+    conv_channels: int = 64
+    num_residual_blocks: int = 3  # Reduced from 4 to help with overfitting
+    dense_hidden: int = 256
+    dropout: float = 0.5  # Increased from 0.3 to help with overfitting
 
     # Data loading
-    num_workers: int = 4
+    num_workers: int = 12
     max_train_positions: Optional[int] = None  # None = load all
     max_val_positions: Optional[int] = None
     train_val_split_ratio: float = 0.9  # Ratio of data to use for training (rest for validation)
@@ -44,11 +62,11 @@ class TrainingConfig:
     validate_every_n_epochs: int = 1
 
     # Device
-    device: str = 'cuda'  # 'cuda', 'mps', or 'cpu'
+    device: str = 'cuda'  # 'cuda', 'mps', or 'cpu' - defaults to MPS (Apple Silicon GPU)
 
     # Optimization
     optimizer: str = 'adam'  # 'adam' or 'sgd'
-    scheduler: Optional[str] = None  # 'step', 'cosine', or None - set to None if you want LR to stay constant after warmup
+    scheduler: Optional[str] = 'cosine'  # 'step', 'cosine', or None - cosine helps with overfitting
     scheduler_step_size: int = 30  # for StepLR
     scheduler_gamma: float = 0.1  # for StepLR
     
@@ -57,11 +75,11 @@ class TrainingConfig:
     warmup_start_lr: Optional[float] = 1e-5  # Starting learning rate for warmup (None = 0.0, recommended: 1e-5 to 1e-4)
 
     # Loss function
-    loss_function: str = 'mse'  # 'mse' or 'huber'
+    loss_function: str = 'huber'  # 'mse' or 'huber' - huber is more robust to outliers
     
     # Score clipping
-    eval_score_min: int = -10000  # Minimum evaluation score in centipawns (clipped)
-    eval_score_max: int = 10000  # Maximum evaluation score in centipawns (clipped)
+    eval_score_min: int = -1500  # Minimum evaluation score in centipawns (clipped) - reduced from -10000 to focus on typical positions
+    eval_score_max: int = 1500  # Maximum evaluation score in centipawns (clipped) - reduced from 10000 to focus on typical positions
 
     # Logging
     log_every_n_batches: int = 100
@@ -75,11 +93,11 @@ class TrainingConfig:
     stockfish_path: str = 'stockfish'
     download_year: Optional[int] = None  # Use latest month (None = auto-detect latest)
     download_month: Optional[int] = None  # Use latest month (None = auto-detect latest)
-    download_max_games: Optional[int] = 10000  # Maximum games to download (simplified workflow)
+    download_max_games: Optional[int] = 100000  # Maximum games to download - increased for more training data
     download_max_games_searched: Optional[int] = None  # Maximum total games to search (None = unlimited)
     download_depth: int = 10
-    download_positions_per_game: int = 10
-    download_num_workers: int = 4
+    download_positions_per_game: int = 20  # Increased to extract more positions per game
+    download_num_workers: int = 32
     download_batch_size: int = 100
     download_rated_only: bool = True  # Download rated games only
     download_output_dir: str = 'data'  # Output directory for downloaded data
@@ -91,7 +109,7 @@ class TrainingConfig:
 
     # Hugging Face upload configuration
     hf_repo_id: str = 'jleezhang/chesshacks_model'
-    hf_auto_upload: bool = True  # Automatically upload checkpoints and final model
+    hf_auto_upload: bool = False  # Automatically upload checkpoints and final model (set to True to enable)
     hf_upload_all_checkpoints: bool = False  # Only upload current checkpoint, not all previous ones
     hf_checkpoints_dir: Optional[str] = None
     hf_model_name: Optional[str] = None
@@ -103,13 +121,28 @@ class TrainingConfig:
         # Create checkpoint directory
         os.makedirs(self.checkpoint_dir, exist_ok=True)
 
-        # Validate device
-        import torch
-        if self.device == 'cuda' and not torch.cuda.is_available():
-            print("CUDA not available, falling back to CPU")
-            self.device = 'cpu'
-        elif self.device == 'mps' and not torch.backends.mps.is_available():
-            print("MPS not available, falling back to CPU")
+        # Validate device (only print warning once)
+        global _device_warning_printed
+        
+        # Check flag first - if already printed, silently set device without printing
+        if _device_warning_printed:
+            if self.device == 'cuda' and not _cuda_available:
+                self.device = 'mps' if _mps_available else 'cpu'
+            elif self.device == 'mps' and not _mps_available:
+                self.device = 'cpu'
+            return
+        
+        # First time through - silently set device without printing
+        if self.device == 'cuda' and not _cuda_available:
+            # Try MPS first, then CPU
+            if _mps_available:
+                _device_warning_printed = True
+                self.device = 'mps'
+            else:
+                _device_warning_printed = True
+                self.device = 'cpu'
+        elif self.device == 'mps' and not _mps_available:
+            _device_warning_printed = True
             self.device = 'cpu'
 
 

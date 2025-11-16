@@ -60,8 +60,8 @@ def _get_latest_lichess_database() -> Tuple[int, int]:
     year = current.year
     month = current.month
 
-    # Try current month and previous 3 months
-    for attempt in range(4):
+    # Try current month and previous 12 months (full year)
+    for attempt in range(13):
         month_str = f"{month:02d}"
         date_str = f"{year}-{month_str}"
         filename = f"lichess_db_standard_rated_{date_str}.pgn.zst"
@@ -73,7 +73,8 @@ def _get_latest_lichess_database() -> Tuple[int, int]:
             if response.status_code == 200:
                 print(f"Auto-detected latest database: {date_str}")
                 return year, month
-        except:
+        except Exception as e:
+            # Silently continue to next month
             pass
 
         # Go back one month
@@ -82,9 +83,25 @@ def _get_latest_lichess_database() -> Tuple[int, int]:
             month = 12
             year -= 1
 
-    # If nothing found, default to October 2025 (fallback)
-    print("Warning: Could not auto-detect latest database, using fallback: 2025-10")
-    return 2025, 10
+    # If nothing found, try a known good recent month (October 2024)
+    # Lichess databases are typically available with a 1-2 month delay
+    print("Warning: Could not auto-detect latest database, trying known recent months...")
+    for test_year, test_month in [(2024, 12), (2024, 11), (2024, 10), (2024, 9)]:
+        month_str = f"{test_month:02d}"
+        date_str = f"{test_year}-{month_str}"
+        filename = f"lichess_db_standard_rated_{date_str}.pgn.zst"
+        url = f"https://database.lichess.org/standard/{filename}"
+        try:
+            response = requests.head(url, timeout=10)
+            if response.status_code == 200:
+                print(f"Using fallback database: {date_str}")
+                return test_year, test_month
+        except:
+            pass
+
+    # Final fallback
+    print("Warning: All auto-detection failed, using final fallback: 2024-10")
+    return 2024, 10
 
 
 def stream_lichess_database(output_dir: Optional[str] = None, year: Optional[int] = None,
@@ -552,63 +569,93 @@ def download_and_process_lichess_data(
 
     os.makedirs(output_dir, exist_ok=True)
 
-    print("=" * 80)
-    print("Downloading Lichess database (simplified workflow)")
-    print("=" * 80)
-    pgn_path = stream_lichess_database(
-        output_dir=output_dir,
-        year=year,
-        month=month,
-        rated_only=rated_only,
-        max_games=max_games,
-        download_mode=download_mode,
-        skip_redownload=skip_redownload,
-        config=config
-    )
-
-    print("\n" + "=" * 80)
-    print("Extracting positions from games")
-    print("=" * 80)
-
-    positions = []
-    for fen in extract_positions_from_pgn(
-        pgn_path,
-        max_games=max_games,
-        positions_per_game=positions_per_game,
-        config=config
-    ):
-        positions.append(fen)
-        if max_positions and len(positions) >= max_positions:
-            break
-    
-    print(f"Extracted {len(positions)} positions from {max_games or 'all'} games")
-    
-    # Save extracted positions (before evaluation)
-    print("\n" + "=" * 80)
-    print("Saving extracted positions")
-    print("=" * 80)
-    
-    # Extract year/month from filename if not already set
+    # Extract year/month early if possible, otherwise will be determined later
     if year is None or month is None:
         import re
-        from datetime import datetime
-        match = re.search(r'(\d{4})-(\d{2})', os.path.basename(pgn_path))
-        if match:
-            year, month = int(match.group(1)), int(match.group(2))
-        else:
-            now = datetime.now()
-            year = year or now.year
-            month = month or now.month
-    
-    # Save raw positions to JSONL file
+        # Try to detect from existing files first
+        for filename in os.listdir(output_dir):
+            match = re.search(r'lichess_(?:positions|evaluated)_(\d{4})-(\d{2})\.jsonl', filename)
+            if match:
+                year, month = int(match.group(1)), int(match.group(2))
+                break
+        # If not found in existing files, use auto-detection
+        if year is None or month is None:
+            year, month = _get_latest_lichess_database()
+
+    # Check if evaluated file already exists
+    evaluated_path = os.path.join(output_dir, f'lichess_evaluated_{year}-{month:02d}.jsonl')
+    if os.path.exists(evaluated_path):
+        print(f"✓ Found existing evaluated file: {evaluated_path}")
+        print(f"  Skipping extraction and evaluation. Using existing file.")
+        return evaluated_path
+
+    # Check if raw positions file exists
     raw_positions_path = os.path.join(output_dir, f'lichess_positions_{year}-{month:02d}.jsonl')
-    with open(raw_positions_path, 'w') as f:
-        for fen in positions:
-            json.dump({'fen': fen}, f)
-            f.write('\n')
-    
-    print(f"Saved {len(positions)} raw positions to: {raw_positions_path}")
-    print(f"Output format: JSONL")
+    if os.path.exists(raw_positions_path):
+        print(f"✓ Found existing raw positions file: {raw_positions_path}")
+        print(f"  Loading positions from file (skipping extraction)...")
+        positions = []
+        with open(raw_positions_path, 'r') as f:
+            for line in f:
+                data = json.loads(line)
+                positions.append(data['fen'])
+        print(f"  Loaded {len(positions)} positions from file")
+    else:
+        # Need to extract positions from PGN
+        print("=" * 80)
+        print("Downloading Lichess database (simplified workflow)")
+        print("=" * 80)
+        pgn_path = stream_lichess_database(
+            output_dir=output_dir,
+            year=year,
+            month=month,
+            rated_only=rated_only,
+            max_games=max_games,
+            download_mode=download_mode,
+            skip_redownload=skip_redownload,
+            config=config
+        )
+
+        print("\n" + "=" * 80)
+        print("Extracting positions from games")
+        print("=" * 80)
+
+        positions = []
+        for fen in extract_positions_from_pgn(
+            pgn_path,
+            max_games=max_games,
+            positions_per_game=positions_per_game,
+            config=config
+        ):
+            positions.append(fen)
+            if max_positions and len(positions) >= max_positions:
+                break
+        
+        print(f"Extracted {len(positions)} positions from {max_games or 'all'} games")
+        
+        # Save extracted positions (before evaluation)
+        print("\n" + "=" * 80)
+        print("Saving extracted positions")
+        print("=" * 80)
+        
+        # Extract year/month from filename if not already set
+        if year is None or month is None:
+            match = re.search(r'(\d{4})-(\d{2})', os.path.basename(pgn_path))
+            if match:
+                year, month = int(match.group(1)), int(match.group(2))
+            else:
+                # Use auto-detection if can't extract from filename
+                year, month = _get_latest_lichess_database()
+        
+        # Update raw_positions_path with correct year/month
+        raw_positions_path = os.path.join(output_dir, f'lichess_positions_{year}-{month:02d}.jsonl')
+        with open(raw_positions_path, 'w') as f:
+            for fen in positions:
+                json.dump({'fen': fen}, f)
+                f.write('\n')
+        
+        print(f"Saved {len(positions)} raw positions to: {raw_positions_path}")
+        print(f"Output format: JSONL")
     
     print("\n" + "=" * 80)
     print("Evaluating positions with Stockfish")
