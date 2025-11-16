@@ -13,8 +13,7 @@ import sys
 import os
 import time
 
-# Add build directory to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "build"))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import c_helpers
 
 

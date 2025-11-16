@@ -4,10 +4,8 @@
 import os
 import sys
 
-# Add parent directory to path
-parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.join(parent_dir, "build"))
-sys.path.insert(0, parent_dir)
+# Add build directory to path
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 def test_cpp_cuda_detection():

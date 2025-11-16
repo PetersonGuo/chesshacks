@@ -21,6 +21,19 @@ include_directories(${CMAKE_SOURCE_DIR}/src)
 # Create the extension module with bindings and implementation files
 nanobind_add_module(c_helpers
     src/bindings.cpp
-    src/functions.cpp
     src/chess_board.cpp
+    src/cuda_utils.cpp
+    src/move_ordering.cpp
+    src/transposition_table.cpp
+    src/evaluation.cpp
+    src/opening_book.cpp
+    src/search_and_utils.cpp
+)
+
+# Create a symlink from build/tests to ../tests for easier test execution
+add_custom_command(TARGET c_helpers POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E create_symlink
+        ${CMAKE_SOURCE_DIR}/tests
+        ${CMAKE_BINARY_DIR}/tests
+    COMMENT "Creating symlink to tests directory"
 )

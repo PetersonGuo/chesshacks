@@ -28,6 +28,40 @@ pip install -r requirements.txt
 
 or however you want to set up your Python.
 
+### Building the C++ Chess Engine
+
+This project includes a high-performance C++ chess engine compiled as a Python extension module. To build it:
+
+```bash
+cd build
+cmake ..
+make
+```
+
+This will create the `c_helpers` module in the `build/` directory.
+
+### Running Tests
+
+All tests are located in the `tests/` directory and should be run from the `build/` directory using the correct Python environment:
+
+```bash
+# Run all tests
+./run_tests.sh
+
+# Run a specific test
+./run_tests.sh test_simple.py
+```
+
+Or manually:
+```bash
+cd build
+/path/to/python3.14 tests/test_simple.py
+```
+
+Note: The C++ module is compiled for Python 3.14. Make sure to use the matching Python version from the `chesshacks` conda environment.
+
+### Next.js Development Tools
+
 Then, install the dependencies for the Next.js app:
 
 ```bash

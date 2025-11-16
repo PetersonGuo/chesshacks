@@ -5,9 +5,8 @@ import os
 import sys
 import time
 
-# Add parent directory to path to import c_helpers
-parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.join(parent_dir, "build"))
+# Add build directory to path
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import c_helpers
 

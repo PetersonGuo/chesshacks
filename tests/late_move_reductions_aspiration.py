@@ -5,10 +5,8 @@ import sys
 import os
 import time
 
-# Get parent directory and add build path
-parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-build_path = os.path.join(parent_dir, "build")
-sys.path.insert(0, build_path)
+# Add build directory to path
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import c_helpers
 

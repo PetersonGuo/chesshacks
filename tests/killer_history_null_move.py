@@ -6,8 +6,7 @@ import os
 import time
 
 # Add build directory to path
-build_path = os.path.join(os.path.dirname(__file__), "build")
-sys.path.insert(0, build_path)
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import c_helpers
 

@@ -2,9 +2,10 @@
 """Comprehensive test of all 21 chess engine features."""
 
 import sys
+import os
 import time
 
-sys.path.insert(0, "build")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import c_helpers
 
 print("=" * 80)

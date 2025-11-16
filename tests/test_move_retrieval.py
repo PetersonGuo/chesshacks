@@ -2,8 +2,9 @@
 """Test the new C++ best move retrieval functions."""
 
 import sys
+import os
 
-sys.path.insert(0, "/home/petersonguo/chesshacks/build")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import c_helpers
 
 # Starting position FEN

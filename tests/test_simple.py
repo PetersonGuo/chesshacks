@@ -2,8 +2,9 @@
 """Simple test for debugging."""
 
 import sys
+import os
 
-sys.path.insert(0, "/home/petersonguo/chesshacks/build")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import c_helpers
 
 # Starting position FEN
@@ -14,7 +15,7 @@ best_fen = c_helpers.find_best_move(STARTING_FEN, 3, c_helpers.evaluate_with_pst
 print(f"Result: '{best_fen}'")
 print(f"Length: {len(best_fen)}")
 print()
-Í
+
 print("Testing get_best_move_uci...")
 best_uci = c_helpers.get_best_move_uci(STARTING_FEN, 3, c_helpers.evaluate_with_pst)
 print(f"Result: '{best_uci}'")
