@@ -361,9 +361,12 @@ def get_scheduler(optimizer: torch.optim.Optimizer,
             gamma=config.scheduler_gamma
         )
     elif config.scheduler == 'cosine':
+        decay_epochs = config.cosine_decay_epochs
+        if decay_epochs is None:
+            decay_epochs = max(1, config.num_epochs - config.warmup_epochs)
         base_scheduler = optim.lr_scheduler.CosineAnnealingLR(
             optimizer,
-            T_max=config.num_epochs - config.warmup_epochs
+            T_max=decay_epochs
         )
 
     # Wrap with warmup if enabled

@@ -69,6 +69,7 @@ class TrainingConfig:
     scheduler: Optional[str] = 'cosine'  # 'step', 'cosine', or None - cosine helps with overfitting
     scheduler_step_size: int = 30  # for StepLR
     scheduler_gamma: float = 0.1  # for StepLR
+    cosine_decay_epochs: Optional[int] = None  # If set, overrides (num_epochs - warmup_epochs)
     
     # Warmup
     warmup_epochs: int = 5  # Number of epochs for learning rate warmup (0 = no warmup) - reduced for 50 total epochs
@@ -77,7 +78,7 @@ class TrainingConfig:
     # Loss function
     loss_function: str = 'huber'  # 'mse' or 'huber' - huber is more robust to outliers
     huber_delta: float = 1.0  # Transition point (in normalized units) for Huber loss
-    loss_error_clip_cp: Optional[float] = 600.0  # Clip loss contribution beyond this error (centipawns). None = disabled
+    loss_error_clip_cp: Optional[float] = 500.0  # Clip loss contribution beyond this error (centipawns). None = disabled
     loss_error_clip_normalized: Optional[float] = None  # Direct clip in normalized units (overrides cp value)
     
     # Score clipping
@@ -200,7 +201,7 @@ RTX_5070_CONFIG = TrainingConfig(
     num_workers=8,  # Balanced for CPU->GPU pipeline
 
     # Training parameters
-    learning_rate=0.0008,  # Slightly lower LR to reduce early overshoot
+    learning_rate=0.0006,  # Lower LR to prevent early plateaus
     num_epochs=100,
     weight_decay=1e-4,
     max_grad_norm=1.0,
@@ -216,6 +217,7 @@ RTX_5070_CONFIG = TrainingConfig(
     scheduler='cosine',
     warmup_epochs=10,  # Longer warmup to smooth LR ramp
     warmup_start_lr=1e-5,
+    cosine_decay_epochs=40,  # Faster cosine decay after warmup
 
     # Loss function
     loss_function='huber',
