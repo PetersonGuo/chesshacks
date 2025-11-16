@@ -76,7 +76,19 @@ def get_nanobind_paths():
         if not nanobind_sources:
             raise RuntimeError(f"No nanobind source files found in {src_dir}")
         
-        return str(include_dir), [str(s) for s in nanobind_sources]
+        # Find tsl/robin_map include directory (nanobind dependency)
+        robin_map_include = nanobind_dir / 'ext' / 'robin_map' / 'include'
+        if not robin_map_include.exists():
+            # Try alternative location
+            robin_map_include = nanobind_dir / 'ext' / 'robin_map'
+            if not robin_map_include.exists():
+                robin_map_include = None
+        
+        include_dirs = [str(include_dir)]
+        if robin_map_include:
+            include_dirs.append(str(robin_map_include))
+        
+        return include_dirs, [str(s) for s in nanobind_sources]
     except ImportError:
         pass
     
@@ -89,7 +101,18 @@ def get_nanobind_paths():
         if include_dir.exists() and src_dir.exists():
             nanobind_sources = list(src_dir.glob('*.cpp'))
             if nanobind_sources:
-                return str(include_dir), [str(s) for s in nanobind_sources]
+                # Find tsl/robin_map include directory
+                robin_map_include = nanobind_path / 'ext' / 'robin_map' / 'include'
+                if not robin_map_include.exists():
+                    robin_map_include = nanobind_path / 'ext' / 'robin_map'
+                    if not robin_map_include.exists():
+                        robin_map_include = None
+                
+                include_dirs = [str(include_dir)]
+                if robin_map_include:
+                    include_dirs.append(str(robin_map_include))
+                
+                return include_dirs, [str(s) for s in nanobind_sources]
     
     raise RuntimeError("Could not find nanobind. Please install it: pip install nanobind")
 
@@ -248,9 +271,10 @@ include_dirs = [
 
 # Add nanobind include and source files (NO CMake needed!)
 try:
-    nanobind_include, nanobind_sources = get_nanobind_paths()
-    include_dirs.append(nanobind_include)
-    print(f"Found nanobind include at: {nanobind_include}")
+    nanobind_includes, nanobind_sources = get_nanobind_paths()
+    # nanobind_includes is now a list of include directories
+    include_dirs.extend(nanobind_includes)
+    print(f"Found nanobind include directories: {nanobind_includes}")
     print(f"Found {len(nanobind_sources)} nanobind source files")
 except RuntimeError as e:
     print(f"Error: {e}")
