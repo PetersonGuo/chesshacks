@@ -8,3 +8,4 @@ build
 .claude
 train/data
 train/checkpoints
+!train/cnn_model/checkpoints/best_model.pt
