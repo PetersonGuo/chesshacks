@@ -106,7 +106,8 @@ class ChessBoardDatasetBitmap(Dataset):
 
         Returns:
             Tuple of (bitmap_features, evaluation)
-            where bitmap_features is a tensor of shape [768] (12 bitboards × 64 squares)
+            where bitmap_features is a tensor of shape [768]
+            (12 bitboards × 64 squares ordered by side to move)
         """
         fen = self.positions[idx]
         eval_score = self.evaluations[idx]
@@ -115,7 +116,7 @@ class ChessBoardDatasetBitmap(Dataset):
         board = chess.Board(fen)
 
         # Get bitmap features
-        features = BitboardFeatures.board_to_features(board)
+        features = BitboardFeatures.board_to_features_for_side(board, perspective=board.turn)
 
         # If it's black to move, flip the evaluation
         if board.turn == chess.BLACK:
@@ -345,9 +346,10 @@ def get_loss_function(config: TrainingConfig) -> torch.nn.Module:
 
 def train_epoch(model: torch.nn.Module, train_loader: torch.utils.data.DataLoader,
                 optimizer: torch.optim.Optimizer, criterion: torch.nn.Module,
-                device: torch.device, config: TrainingConfig, epoch: int) -> float:
+                device: torch.device, config: TrainingConfig, epoch: int,
+                eval_std: Optional[float] = None) -> Dict[str, float]:
     """
-    Train for one epoch
+    Train for one epoch with comprehensive metrics
 
     Args:
         model: NNUE model
@@ -357,13 +359,24 @@ def train_epoch(model: torch.nn.Module, train_loader: torch.utils.data.DataLoade
         device: Device to train on
         config: Training configuration
         epoch: Current epoch number
+        eval_std: Standard deviation of evaluations in centipawns (for denormalization)
 
     Returns:
-        Average training loss for the epoch
+        Dictionary with training metrics:
+        - loss: Average loss (normalized)
+        - rmse_normalized: RMSE in normalized space
+        - rmse_centipawns: RMSE in centipawns (if eval_std provided)
+        - mae_normalized: MAE in normalized space
+        - mae_centipawns: MAE in centipawns (if eval_std provided)
     """
     model.train()
     total_loss = 0.0
     num_batches = len(train_loader)
+    
+    # Track predictions and targets for metrics (sample every N batches to save memory)
+    sample_outputs = []
+    sample_targets = []
+    sample_interval = max(1, num_batches // 10)  # Sample ~10 batches per epoch
 
     # Progress bar
     pbar = tqdm(train_loader, desc=f'Epoch {epoch+1}/{config.num_epochs}',
@@ -393,19 +406,50 @@ def train_epoch(model: torch.nn.Module, train_loader: torch.utils.data.DataLoade
 
         # Track loss
         total_loss += loss.item()
+        
+        # Sample predictions for metrics (to avoid memory issues)
+        if batch_idx % sample_interval == 0:
+            sample_outputs.append(outputs.detach().cpu())
+            sample_targets.append(targets.detach().cpu())
 
         # Update progress bar
         if batch_idx % config.log_every_n_batches == 0:
             pbar.set_postfix({'loss': f'{loss.item():.4f}'})
-
-    return total_loss / num_batches if num_batches > 0 else 0.0
+    
+    # Calculate metrics from samples
+    if sample_outputs:
+        sample_outputs = torch.cat(sample_outputs, dim=0).squeeze()
+        sample_targets = torch.cat(sample_targets, dim=0).squeeze()
+        errors = sample_outputs - sample_targets
+        errors_abs = torch.abs(errors)
+        
+        rmse_normalized = torch.sqrt(torch.mean(errors ** 2)).item()
+        mae_normalized = torch.mean(errors_abs).item()
+    else:
+        rmse_normalized = 0.0
+        mae_normalized = 0.0
+    
+    avg_loss = total_loss / num_batches if num_batches > 0 else 0.0
+    
+    metrics = {
+        'loss': avg_loss,
+        'rmse_normalized': rmse_normalized,
+        'mae_normalized': mae_normalized,
+    }
+    
+    # Convert to centipawns if eval_std is available
+    if eval_std is not None and eval_std > 0:
+        metrics['rmse_centipawns'] = rmse_normalized * eval_std
+        metrics['mae_centipawns'] = mae_normalized * eval_std
+    
+    return metrics
 
 
 def validate(model: torch.nn.Module, val_loader: torch.utils.data.DataLoader,
              criterion: torch.nn.Module, device: torch.device,
-             config: TrainingConfig) -> float:
+             config: TrainingConfig, eval_std: Optional[float] = None) -> Dict[str, float]:
     """
-    Validate the model
+    Validate the model with comprehensive metrics
 
     Args:
         model: NNUE model
@@ -413,13 +457,27 @@ def validate(model: torch.nn.Module, val_loader: torch.utils.data.DataLoader,
         criterion: Loss function
         device: Device to validate on
         config: Training configuration
+        eval_std: Standard deviation of evaluations in centipawns (for denormalization)
 
     Returns:
-        Average validation loss
+        Dictionary with validation metrics:
+        - loss: Average loss (normalized)
+        - rmse_normalized: RMSE in normalized space
+        - rmse_centipawns: RMSE in centipawns (if eval_std provided)
+        - mae_normalized: MAE in normalized space
+        - mae_centipawns: MAE in centipawns (if eval_std provided)
+        - accuracy_50cp: % of predictions within 50 centipawns
+        - accuracy_100cp: % of predictions within 100 centipawns
+        - accuracy_200cp: % of predictions within 200 centipawns
     """
     model.eval()
     total_loss = 0.0
     num_batches = len(val_loader)
+    
+    # Track predictions and targets for detailed metrics
+    all_outputs = []
+    all_targets = []
+    total_samples = 0
 
     with torch.no_grad():
         pbar = tqdm(val_loader, desc='Validating', disable=not config.verbose)
@@ -434,10 +492,54 @@ def validate(model: torch.nn.Module, val_loader: torch.utils.data.DataLoader,
             # Calculate loss
             loss = criterion(outputs, targets)
             total_loss += loss.item()
+            
+            # Collect predictions and targets for metrics
+            all_outputs.append(outputs.cpu())
+            all_targets.append(targets.cpu())
+            total_samples += targets.size(0)
 
             pbar.set_postfix({'val_loss': f'{loss.item():.4f}'})
-
-    return total_loss / num_batches if num_batches > 0 else 0.0
+    
+    # Concatenate all predictions and targets
+    all_outputs = torch.cat(all_outputs, dim=0).squeeze()
+    all_targets = torch.cat(all_targets, dim=0).squeeze()
+    
+    # Calculate metrics
+    errors = all_outputs - all_targets
+    errors_abs = torch.abs(errors)
+    
+    # Loss (already averaged)
+    avg_loss = total_loss / num_batches if num_batches > 0 else 0.0
+    
+    # RMSE (Root Mean Squared Error)
+    rmse_normalized = torch.sqrt(torch.mean(errors ** 2)).item()
+    
+    # MAE (Mean Absolute Error)
+    mae_normalized = torch.mean(errors_abs).item()
+    
+    metrics = {
+        'loss': avg_loss,
+        'rmse_normalized': rmse_normalized,
+        'mae_normalized': mae_normalized,
+    }
+    
+    # Convert to centipawns if eval_std is available
+    if eval_std is not None and eval_std > 0:
+        metrics['rmse_centipawns'] = rmse_normalized * eval_std
+        metrics['mae_centipawns'] = mae_normalized * eval_std
+        
+        # Accuracy metrics (percentage within X centipawns)
+        errors_centipawns = errors_abs * eval_std
+        metrics['accuracy_50cp'] = (errors_centipawns <= 50).float().mean().item() * 100
+        metrics['accuracy_100cp'] = (errors_centipawns <= 100).float().mean().item() * 100
+        metrics['accuracy_200cp'] = (errors_centipawns <= 200).float().mean().item() * 100
+        
+        # Additional statistics
+        metrics['max_error_centipawns'] = errors_centipawns.max().item()
+        metrics['median_error_centipawns'] = errors_centipawns.median().item()
+        metrics['p95_error_centipawns'] = torch.quantile(errors_centipawns, 0.95).item()
+    
+    return metrics
 
 
 def save_checkpoint(
@@ -682,6 +784,16 @@ def train(config: TrainingConfig) -> Tuple[torch.nn.Module, Dict[str, list]]:
     print(f"Training batches: {len(train_loader)}")
     if val_loader:
         print(f"Validation batches: {len(val_loader)}")
+    
+    # Extract eval_std from dataset for metric conversion
+    eval_std = None
+    if hasattr(train_loader.dataset, 'eval_std') and train_loader.dataset.eval_std > 0:
+        eval_std = train_loader.dataset.eval_std
+        eval_mean = train_loader.dataset.eval_mean
+        print(f"\nEvaluation statistics:")
+        print(f"  Mean: {eval_mean:.2f} centipawns")
+        print(f"  Std:  {eval_std:.2f} centipawns")
+        print(f"  (Metrics will be converted to centipawns)")
 
     # Create NNUE model
     print("\nCreating NNUE model...")
@@ -739,7 +851,20 @@ def train(config: TrainingConfig) -> Tuple[torch.nn.Module, Dict[str, list]]:
 
     training_history = {
         'train_loss': [],
+        'train_rmse_normalized': [],
+        'train_mae_normalized': [],
+        'train_rmse_centipawns': [],
+        'train_mae_centipawns': [],
         'val_loss': [],
+        'val_rmse_normalized': [],
+        'val_mae_normalized': [],
+        'val_rmse_centipawns': [],
+        'val_mae_centipawns': [],
+        'val_accuracy_50cp': [],
+        'val_accuracy_100cp': [],
+        'val_accuracy_200cp': [],
+        'val_median_error_centipawns': [],
+        'val_p95_error_centipawns': [],
         'learning_rate': []
     }
 
@@ -764,11 +889,16 @@ def train(config: TrainingConfig) -> Tuple[torch.nn.Module, Dict[str, list]]:
 
     for epoch in range(start_epoch, config.num_epochs):
         # Train
-        train_loss = train_epoch(
-            model, train_loader, optimizer, criterion, device, config, epoch
+        train_metrics = train_epoch(
+            model, train_loader, optimizer, criterion, device, config, epoch, eval_std
         )
-        training_history['train_loss'].append(train_loss)
-        last_train_loss = train_loss
+        training_history['train_loss'].append(train_metrics['loss'])
+        training_history['train_rmse_normalized'].append(train_metrics['rmse_normalized'])
+        training_history['train_mae_normalized'].append(train_metrics['mae_normalized'])
+        if 'rmse_centipawns' in train_metrics:
+            training_history['train_rmse_centipawns'].append(train_metrics['rmse_centipawns'])
+            training_history['train_mae_centipawns'].append(train_metrics['mae_centipawns'])
+        last_train_loss = train_metrics['loss']
 
         # Log current learning rate
         current_lr = optimizer.param_groups[0]['lr']
@@ -779,14 +909,29 @@ def train(config: TrainingConfig) -> Tuple[torch.nn.Module, Dict[str, list]]:
         if config.warmup_epochs > 0 and epoch < config.warmup_epochs:
             warmup_status = f" [Warmup {epoch+1}/{config.warmup_epochs}]"
 
-        print(f"Epoch {epoch+1}/{config.num_epochs} - Train Loss: {train_loss:.4f}, LR: {current_lr:.6f}{warmup_status}")
+        # Print training metrics
+        train_loss_str = f"Loss: {train_metrics['loss']:.4f}"
+        if 'rmse_centipawns' in train_metrics:
+            train_loss_str += f" | RMSE: {train_metrics['rmse_centipawns']:.1f}cp | MAE: {train_metrics['mae_centipawns']:.1f}cp"
+        print(f"Epoch {epoch+1}/{config.num_epochs} - Train {train_loss_str}, LR: {current_lr:.6f}{warmup_status}")
 
         # Validate
-        val_loss = None
+        val_metrics = None
         improved = False
         if has_validation and (epoch + 1) % config.validate_every_n_epochs == 0:
-            val_loss = validate(model, val_loader, criterion, device, config)
+            val_metrics = validate(model, val_loader, criterion, device, config, eval_std)
+            val_loss = val_metrics['loss']
             training_history['val_loss'].append(val_loss)
+            training_history['val_rmse_normalized'].append(val_metrics['rmse_normalized'])
+            training_history['val_mae_normalized'].append(val_metrics['mae_normalized'])
+            if 'rmse_centipawns' in val_metrics:
+                training_history['val_rmse_centipawns'].append(val_metrics['rmse_centipawns'])
+                training_history['val_mae_centipawns'].append(val_metrics['mae_centipawns'])
+                training_history['val_accuracy_50cp'].append(val_metrics.get('accuracy_50cp', 0))
+                training_history['val_accuracy_100cp'].append(val_metrics.get('accuracy_100cp', 0))
+                training_history['val_accuracy_200cp'].append(val_metrics.get('accuracy_200cp', 0))
+                training_history['val_median_error_centipawns'].append(val_metrics.get('median_error_centipawns', 0))
+                training_history['val_p95_error_centipawns'].append(val_metrics.get('p95_error_centipawns', 0))
             last_val_loss = val_loss
             
             # Apply exponential moving average smoothing
@@ -795,7 +940,13 @@ def train(config: TrainingConfig) -> Tuple[torch.nn.Module, Dict[str, list]]:
             else:
                 val_loss_smooth = val_loss_smooth_alpha * val_loss_smooth + (1 - val_loss_smooth_alpha) * val_loss
             
-            print(f"Epoch {epoch+1}/{config.num_epochs} - Val Loss: {val_loss:.4f} (smoothed: {val_loss_smooth:.4f})")
+            # Print validation metrics
+            val_loss_str = f"Loss: {val_loss:.4f} (smoothed: {val_loss_smooth:.4f})"
+            if 'rmse_centipawns' in val_metrics:
+                val_loss_str += f"\n  RMSE: {val_metrics['rmse_centipawns']:.1f}cp | MAE: {val_metrics['mae_centipawns']:.1f}cp"
+                val_loss_str += f" | Median: {val_metrics.get('median_error_centipawns', 0):.1f}cp | P95: {val_metrics.get('p95_error_centipawns', 0):.1f}cp"
+                val_loss_str += f"\n  Accuracy: {val_metrics.get('accuracy_50cp', 0):.1f}% within 50cp | {val_metrics.get('accuracy_100cp', 0):.1f}% within 100cp | {val_metrics.get('accuracy_200cp', 0):.1f}% within 200cp"
+            print(f"Epoch {epoch+1}/{config.num_epochs} - Val {val_loss_str}")
             
             # Track best model based on raw validation loss (more accurate for checkpointing)
             if val_loss < best_val_loss:
@@ -818,7 +969,7 @@ def train(config: TrainingConfig) -> Tuple[torch.nn.Module, Dict[str, list]]:
         # Save best checkpoint whenever validation improves
         if improved:
             save_checkpoint(
-                model, optimizer, epoch, train_loss, val_loss,
+                model, optimizer, epoch, train_metrics['loss'], val_metrics['loss'] if val_metrics else None,
                 config, 'best_model.pt', upload_to_hf=False,
                 upload_threads=upload_threads, scheduler=scheduler,
                 best_val_loss=best_val_loss, training_start_time=training_start_time,
@@ -828,7 +979,7 @@ def train(config: TrainingConfig) -> Tuple[torch.nn.Module, Dict[str, list]]:
         save_regular = (epoch + 1) % config.save_every_n_epochs == 0
         if save_regular and (not config.save_best_only or not has_validation):
             save_checkpoint(
-                model, optimizer, epoch, train_loss, val_loss,
+                model, optimizer, epoch, train_metrics['loss'], val_metrics['loss'] if val_metrics else None,
                 config, f'checkpoint_epoch_{epoch+1}.pt',
                 upload_to_hf=config.hf_auto_upload, upload_threads=upload_threads,
                 scheduler=scheduler, best_val_loss=best_val_loss,
@@ -843,17 +994,36 @@ def train(config: TrainingConfig) -> Tuple[torch.nn.Module, Dict[str, list]]:
 
     if last_train_loss is None:
         print("\nNo new epochs were run (start_epoch >= num_epochs). Skipping additional checkpointing.")
-        final_val_loss = last_val_loss
+        final_val_metrics = None
     else:
         # Run final validation if we have a val_loader and didn't just validate
-        final_val_loss = last_val_loss
+        final_val_metrics = None
         final_improved = False
         if has_validation and (config.num_epochs % config.validate_every_n_epochs != 0):
             print("Running final validation...")
-            final_val_loss = validate(model, val_loader, criterion, device, config)
+            final_val_metrics = validate(model, val_loader, criterion, device, config, eval_std)
+            final_val_loss = final_val_metrics['loss']
             training_history['val_loss'].append(final_val_loss)
+            training_history['val_rmse_normalized'].append(final_val_metrics['rmse_normalized'])
+            training_history['val_mae_normalized'].append(final_val_metrics['mae_normalized'])
+            if 'rmse_centipawns' in final_val_metrics:
+                training_history['val_rmse_centipawns'].append(final_val_metrics['rmse_centipawns'])
+                training_history['val_mae_centipawns'].append(final_val_metrics['mae_centipawns'])
+                training_history['val_accuracy_50cp'].append(final_val_metrics.get('accuracy_50cp', 0))
+                training_history['val_accuracy_100cp'].append(final_val_metrics.get('accuracy_100cp', 0))
+                training_history['val_accuracy_200cp'].append(final_val_metrics.get('accuracy_200cp', 0))
+                training_history['val_median_error_centipawns'].append(final_val_metrics.get('median_error_centipawns', 0))
+                training_history['val_p95_error_centipawns'].append(final_val_metrics.get('p95_error_centipawns', 0))
             last_val_loss = final_val_loss
-            print(f"Final Validation Loss: {final_val_loss:.4f}")
+            
+            # Print final validation metrics
+            final_val_str = f"Loss: {final_val_loss:.4f}"
+            if 'rmse_centipawns' in final_val_metrics:
+                final_val_str += f" | RMSE: {final_val_metrics['rmse_centipawns']:.1f}cp | MAE: {final_val_metrics['mae_centipawns']:.1f}cp"
+                final_val_str += f" | Median: {final_val_metrics.get('median_error_centipawns', 0):.1f}cp | P95: {final_val_metrics.get('p95_error_centipawns', 0):.1f}cp"
+                final_val_str += f"\n  Accuracy: {final_val_metrics.get('accuracy_50cp', 0):.1f}% within 50cp | {final_val_metrics.get('accuracy_100cp', 0):.1f}% within 100cp | {final_val_metrics.get('accuracy_200cp', 0):.1f}% within 200cp"
+            print(f"Final Validation - {final_val_str}")
+            
             if final_val_loss < best_val_loss:
                 best_val_loss = final_val_loss
                 final_improved = True
@@ -861,7 +1031,7 @@ def train(config: TrainingConfig) -> Tuple[torch.nn.Module, Dict[str, list]]:
         # Update best model if final validation improved
         if final_improved:
             save_checkpoint(
-                model, optimizer, config.num_epochs - 1, last_train_loss, final_val_loss,
+                model, optimizer, config.num_epochs - 1, last_train_loss, final_val_metrics['loss'] if final_val_metrics else None,
                 config, 'best_model.pt', upload_to_hf=False,
                 upload_threads=upload_threads, scheduler=scheduler,
                 best_val_loss=best_val_loss, training_start_time=training_start_time,
@@ -895,8 +1065,9 @@ def train(config: TrainingConfig) -> Tuple[torch.nn.Module, Dict[str, list]]:
                 print("Started background upload for best model (training continues...)")
 
         # Ensure last epoch checkpoint is saved
+        final_val_loss_for_checkpoint = final_val_metrics['loss'] if final_val_metrics else last_val_loss
         save_checkpoint(
-            model, optimizer, config.num_epochs - 1, last_train_loss, final_val_loss,
+            model, optimizer, config.num_epochs - 1, last_train_loss, final_val_loss_for_checkpoint,
             config, f'checkpoint_epoch_{config.num_epochs}.pt',
             upload_to_hf=False, upload_threads=upload_threads,
             scheduler=scheduler, best_val_loss=best_val_loss,
@@ -905,7 +1076,7 @@ def train(config: TrainingConfig) -> Tuple[torch.nn.Module, Dict[str, list]]:
 
         # Save final model snapshot
         save_checkpoint(
-            model, optimizer, config.num_epochs - 1, last_train_loss, final_val_loss,
+            model, optimizer, config.num_epochs - 1, last_train_loss, final_val_loss_for_checkpoint,
             config, 'final_model.pt', upload_to_hf=False,
             upload_threads=upload_threads, scheduler=scheduler,
             best_val_loss=best_val_loss, training_start_time=training_start_time,
@@ -1105,4 +1276,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-

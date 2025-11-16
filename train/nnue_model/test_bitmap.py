@@ -1,9 +1,18 @@
 """
 Test script to verify bitmap NNUE implementation
 """
+import os
+import sys
+
 import torch
 import chess
-from model import ChessNNUEModel, BitboardFeatures
+
+try:
+    from .model import ChessNNUEModel, BitboardFeatures
+except ImportError:
+    # Allow running the test file directly (python train/nnue_model/test_bitmap.py)
+    sys.path.insert(0, os.path.dirname(__file__))
+    from model import ChessNNUEModel, BitboardFeatures
 
 
 def test_bitmap_features():
@@ -24,14 +33,24 @@ def test_bitmap_features():
 
     # Verify we have 32 pieces total (16 per side)
     bitboards = BitboardFeatures.board_to_bitmap(board)
-    for i in range(12):
-        piece_count = bitboards[i].sum().item()
+    piece_descriptions = [
+        ("White Pawn", BitboardFeatures.WHITE, BitboardFeatures.PAWN),
+        ("White Knight", BitboardFeatures.WHITE, BitboardFeatures.KNIGHT),
+        ("White Bishop", BitboardFeatures.WHITE, BitboardFeatures.BISHOP),
+        ("White Rook", BitboardFeatures.WHITE, BitboardFeatures.ROOK),
+        ("White Queen", BitboardFeatures.WHITE, BitboardFeatures.QUEEN),
+        ("White King", BitboardFeatures.WHITE, BitboardFeatures.KING),
+        ("Black Pawn", BitboardFeatures.BLACK, BitboardFeatures.PAWN),
+        ("Black Knight", BitboardFeatures.BLACK, BitboardFeatures.KNIGHT),
+        ("Black Bishop", BitboardFeatures.BLACK, BitboardFeatures.BISHOP),
+        ("Black Rook", BitboardFeatures.BLACK, BitboardFeatures.ROOK),
+        ("Black Queen", BitboardFeatures.BLACK, BitboardFeatures.QUEEN),
+        ("Black King", BitboardFeatures.BLACK, BitboardFeatures.KING),
+    ]
+    for name, color_idx, piece_idx in piece_descriptions:
+        piece_count = int(bitboards[color_idx, piece_idx].sum().item())
         if piece_count > 0:
-            piece_names = ['White Pawn', 'White Knight', 'White Bishop',
-                          'White Rook', 'White Queen', 'White King',
-                          'Black Pawn', 'Black Knight', 'Black Bishop',
-                          'Black Rook', 'Black Queen', 'Black King']
-            print(f"   {piece_names[i]}: {int(piece_count)} pieces")
+            print(f"   {name}: {piece_count} pieces")
 
     # Test empty board
     board_empty = chess.Board(fen="8/8/8/8/8/8/8/8 w - - 0 1")
@@ -87,8 +106,11 @@ def test_batch_processing():
         chess.Board(fen="8/8/8/4k3/8/8/4K3/8 w - - 0 1"),
     ]
 
-    # Extract features for all positions
-    features_list = [BitboardFeatures.board_to_features(board) for board in positions]
+    # Extract features from side-to-move perspective
+    features_list = [
+        BitboardFeatures.board_to_features_for_side(board, perspective=board.turn)
+        for board in positions
+    ]
     features_batch = torch.stack(features_list, dim=0)
 
     print(f"\nBatch shape: {features_batch.shape}")

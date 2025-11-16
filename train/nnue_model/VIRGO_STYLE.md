@@ -316,7 +316,7 @@ print(analysis)
 
 The Virgo-style bitboards are **fully compatible** with the existing training pipeline:
 
-✅ **Dataset**: Loads FEN, converts to Virgo-style on-the-fly
+✅ **Dataset**: Loads FEN, converts to Virgo-style on-the-fly (reorders by side-to-move)
 ✅ **DataLoader**: Batches flattened [768] tensors
 ✅ **Model**: Accepts [batch_size, 768] input
 ✅ **Checkpoints**: Works with existing checkpoints

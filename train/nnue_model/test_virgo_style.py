@@ -2,9 +2,18 @@
 Test Virgo-style bitboard implementation
 Verifies compatibility with the Virgo chess engine bitboard format
 """
+import os
+import sys
+
 import torch
 import chess
-from model import ChessNNUEModel, BitboardFeatures
+
+try:
+    from .model import ChessNNUEModel, BitboardFeatures
+except ImportError:
+    # Allow running as a standalone script (python train/nnue_model/test_virgo_style.py)
+    sys.path.insert(0, os.path.dirname(__file__))
+    from model import ChessNNUEModel, BitboardFeatures
 
 
 def test_virgo_structure():
@@ -169,6 +178,26 @@ def test_model_compatibility():
     print(f"✓ Batch evaluation: {outputs.shape}")
 
     print(f"\n✓ Model compatibility verified!")
+
+
+def test_side_to_move_features():
+    """Ensure side-to-move perspective reordering works"""
+    board = chess.Board()
+    base = BitboardFeatures.board_to_features(board).reshape(2, 6, 64)
+
+    white_first = BitboardFeatures.board_to_features_for_side(board, perspective=chess.WHITE)
+    black_first = BitboardFeatures.board_to_features_for_side(board, perspective=chess.BLACK)
+
+    expected_white = torch.stack(
+        (base[BitboardFeatures.WHITE], base[BitboardFeatures.BLACK])
+    ).flatten()
+    expected_black = torch.stack(
+        (base[BitboardFeatures.BLACK], base[BitboardFeatures.WHITE])
+    ).flatten()
+
+    assert torch.allclose(white_first, expected_white)
+    assert torch.allclose(black_first, expected_black)
+    print("\n✓ Side-to-move reordering verified!")
 
 
 def test_virgo_layout_documentation():

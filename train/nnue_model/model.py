@@ -6,6 +6,7 @@ Bitmap-based variant for chess position evaluation - optimized for fast inferenc
 import torch
 import torch.nn as nn
 import chess
+from typing import Optional
 
 
 class ClippedReLU(nn.Module):
@@ -127,14 +128,41 @@ class BitboardFeatures:
         piece_idx = BitboardFeatures.PIECE_TO_INDEX[piece_type]
         return bitboards[color_idx, piece_idx]
 
+    @staticmethod
+    def board_to_features_for_side(board: chess.Board, perspective: Optional[chess.Color] = None) -> torch.Tensor:
+        """
+        Convert chess board to flattened bitmap features with colors ordered from the specified perspective.
+
+        Args:
+            board: python-chess Board object
+            perspective: chess.WHITE or chess.BLACK (defaults to board.turn)
+
+        Returns:
+            Flattened bitmap tensor of shape [768] where the first 384 features correspond to
+            the perspective player and the remaining 384 to the opponent.
+        """
+        if perspective is None:
+            perspective = board.turn
+
+        bitboards = BitboardFeatures.board_to_bitmap(board)
+
+        if perspective == chess.WHITE:
+            ordered = bitboards[[BitboardFeatures.WHITE, BitboardFeatures.BLACK], :, :]
+        else:
+            ordered = bitboards[[BitboardFeatures.BLACK, BitboardFeatures.WHITE], :, :]
+
+        return ordered.flatten()
+
 
 class ChessNNUEModel(nn.Module):
     """
     NNUE Neural Network for chess position evaluation
-    Architecture: Bitmap features (768) → 256 → 32 → 32 → 1
+    Architecture: Bitmap features (768) → 256 → 32 → 32 → 1 (linear output)
 
     Uses bitmap/bitboard representation for efficient chess position encoding.
     12 bitboards (6 piece types × 2 colors) × 64 squares = 768 input features.
+
+    Output is linear (no activation) to support full range of normalized evaluations.
     """
 
     def __init__(self, hidden_size=256, hidden2_size=32, hidden3_size=32):
@@ -154,18 +182,15 @@ class ChessNNUEModel(nn.Module):
         # Activations
         self.crelu = ClippedReLU()
 
-        # Output scaling factor for normalized outputs
-        # With normalization, we use a smaller scale
-        self.output_scale = 3.0
-
         # Initialize layer weights
         self._init_weights()
 
     def _init_weights(self):
-        """Initialize weights with small values for stability"""
+        """Initialize weights for stability and faster convergence"""
         for m in self.modules():
             if isinstance(m, nn.Linear):
-                nn.init.xavier_uniform_(m.weight, gain=0.5)
+                # Use gain=1.0 for better initial gradients
+                nn.init.xavier_uniform_(m.weight, gain=1.0)
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
 
@@ -174,7 +199,7 @@ class ChessNNUEModel(nn.Module):
         Forward pass through the network with bitmap inputs
 
         Args:
-            x: [batch_size, 768] tensor with bitmap features
+            x: [batch_size, 768] tensor with bitmap features (side-to-move normalized)
 
         Returns:
             Position evaluation [batch_size, 1] (normalized)
@@ -187,11 +212,9 @@ class ChessNNUEModel(nn.Module):
         x = self.crelu(self.fc2(x))
         x = self.fc3(x)
 
-        # Scale output using tanh to bound values
-        # tanh outputs [-1, 1], so multiply by output_scale
-        # With normalized targets (std ~1), scale of 3 covers ±3 standard deviations
-        x = torch.tanh(x) * self.output_scale
-
+        # Linear output - no activation
+        # This allows the model to learn the full range of normalized evaluation scores
+        # The loss function (MSE or Huber) will guide learning without artificial bounds
         return x
 
     def evaluate_board(self, board: chess.Board):
@@ -209,8 +232,8 @@ class ChessNNUEModel(nn.Module):
             params = next(self.parameters())
             device = params.device
 
-            # Get bitmap features
-            features = BitboardFeatures.board_to_features(board)
+            # Get bitmap features from side-to-move perspective
+            features = BitboardFeatures.board_to_features_for_side(board, perspective=board.turn)
             features = features.unsqueeze(0).to(device)  # Add batch dimension
 
             # Account for side to move
@@ -270,4 +293,3 @@ if __name__ == "__main__":
     # Test evaluation
     eval_score = model.evaluate_board(board)
     print(f"\nBoard evaluation: {eval_score:.2f}")
-

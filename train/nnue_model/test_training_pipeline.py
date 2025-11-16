@@ -6,14 +6,17 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-import torch
-import tempfile
 import json
+import tempfile
+
 import chess
+import pytest
+import torch
+from torch.utils.data import DataLoader
+
 from train.nnue_model.model import ChessNNUEModel, BitboardFeatures
 from train.nnue_model.train import ChessBoardDatasetBitmap, collate_fn_bitmap, create_dataloaders
 from train.config import get_config
-from torch.utils.data import DataLoader
 
 
 def create_test_data(num_positions=1000):
@@ -41,45 +44,53 @@ def create_test_data(num_positions=1000):
     return positions
 
 
-def test_dataset():
+def _write_positions(path, positions):
+    with open(path, 'w') as f:
+        for pos in positions:
+            f.write(json.dumps(pos) + '\n')
+
+
+@pytest.fixture(scope="module")
+def temp_file(tmp_path_factory):
+    """Shared temporary dataset file for unit tests"""
+    data_dir = tmp_path_factory.mktemp("nnue_bitmap")
+    data_path = data_dir / "positions.jsonl"
+    _write_positions(data_path, create_test_data(100))
+    return str(data_path)
+
+
+def create_temp_dataset_file(num_positions=100):
+    """Helper for running this module as a standalone script"""
+    fd, path = tempfile.mkstemp(suffix='.jsonl')
+    os.close(fd)
+    _write_positions(path, create_test_data(num_positions))
+    return path
+
+
+def test_dataset(temp_file):
     """Test bitmap dataset creation"""
     print("=" * 80)
     print("Testing Bitmap Dataset")
     print("=" * 80)
+    # Create dataset
+    dataset = ChessBoardDatasetBitmap(
+        data_path=temp_file,
+        max_positions=100,
+        normalize=True
+    )
 
-    # Create temporary data file
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.jsonl', delete=False) as f:
-        temp_file = f.name
-        positions = create_test_data(100)
-        for pos in positions:
-            f.write(json.dumps(pos) + '\n')
+    print(f"\nDataset size: {len(dataset)}")
+    print(f"Normalization: mean={dataset.eval_mean:.4f}, std={dataset.eval_std:.4f}")
 
-    try:
-        # Create dataset
-        dataset = ChessBoardDatasetBitmap(
-            data_path=temp_file,
-            max_positions=100,
-            normalize=True
-        )
+    # Test data loading
+    features, eval_score = dataset[0]
+    print(f"\nSample data:")
+    print(f"  Features shape: {features.shape}")
+    print(f"  Features dtype: {features.dtype}")
+    print(f"  Evaluation: {eval_score:.4f}")
+    print(f"  Non-zero features: {(features != 0).sum().item()}")
 
-        print(f"\nDataset size: {len(dataset)}")
-        print(f"Normalization: mean={dataset.eval_mean:.4f}, std={dataset.eval_std:.4f}")
-
-        # Test data loading
-        features, eval_score = dataset[0]
-        print(f"\nSample data:")
-        print(f"  Features shape: {features.shape}")
-        print(f"  Features dtype: {features.dtype}")
-        print(f"  Evaluation: {eval_score:.4f}")
-        print(f"  Non-zero features: {(features != 0).sum().item()}")
-
-        print("\n✓ Dataset test passed!")
-        return temp_file
-
-    except Exception as e:
-        print(f"\n✗ Dataset test failed: {e}")
-        os.unlink(temp_file)
-        raise
+    print("\n✓ Dataset test passed!")
 
 
 def test_dataloader(temp_file):
@@ -282,7 +293,8 @@ if __name__ == "__main__":
 
     try:
         # Run all tests
-        temp_file = test_dataset()
+        temp_file = create_temp_dataset_file(100)
+        test_dataset(temp_file)
         test_dataloader(temp_file)
         test_model_training(temp_file)
         test_rtx5070_config()

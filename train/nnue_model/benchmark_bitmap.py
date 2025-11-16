@@ -20,7 +20,7 @@ def benchmark_feature_extraction(num_positions=1000):
     # Benchmark bitmap feature extraction
     start = time.time()
     for board in boards:
-        features = BitboardFeatures.board_to_features(board)
+        features = BitboardFeatures.board_to_features_for_side(board, perspective=board.turn)
     bitmap_time = time.time() - start
 
     print(f"\nBitmap feature extraction:")
@@ -40,7 +40,10 @@ def benchmark_model_inference(num_positions=1000, batch_size=256):
 
     # Create random positions
     boards = [chess.Board() for _ in range(num_positions)]
-    features_list = [BitboardFeatures.board_to_features(board) for board in boards]
+    features_list = [
+        BitboardFeatures.board_to_features_for_side(board, perspective=board.turn)
+        for board in boards
+    ]
 
     # Benchmark single position inference
     print("\n1. Single Position Inference:")
@@ -90,7 +93,10 @@ def benchmark_gpu_inference(num_positions=1000, batch_size=256):
 
     # Create random positions
     boards = [chess.Board() for _ in range(num_positions)]
-    features_list = [BitboardFeatures.board_to_features(board).to(device) for board in boards]
+    features_list = [
+        BitboardFeatures.board_to_features_for_side(board, perspective=board.turn).to(device)
+        for board in boards
+    ]
 
     # Warmup
     with torch.no_grad():

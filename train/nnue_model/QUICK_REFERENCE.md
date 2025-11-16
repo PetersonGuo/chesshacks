@@ -174,13 +174,13 @@ while true; do python train/nnue_model/train.py --no-prompt || sleep 5; done
 **Bitmap NNUE (256→32→32)**:
 - Parameters: 206,177
 - Size: 0.79 MB
-- Input: 768 features (12 bitboards)
+- Input: 768 features (12 bitboards, re-ordered by side-to-move)
 - Speed: ~926K positions/sec (batched)
 
 **Quality NNUE (512→64→64)**:
 - Parameters: 430,785
 - Size: 1.65 MB
-- Input: 768 features (12 bitboards)
+- Input: 768 features (12 bitboards, re-ordered by side-to-move)
 - Speed: ~600K positions/sec (batched)
 
 ---

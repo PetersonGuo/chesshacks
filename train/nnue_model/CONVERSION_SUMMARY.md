@@ -72,19 +72,15 @@ BitboardFeatures.KNIGHT # 1
 
 ### ✅ Fully Backward Compatible
 
-- **Training pipeline**: No changes needed
+- **Training pipeline**: No manual changes needed
 - **Model architecture**: Same 768 input size
 - **Existing checkpoints**: Still work
 - **Performance**: Identical (zero-cost abstraction)
 
 ### Flattened Format
 
-For neural network input, still uses `[768]` flattened tensor:
-```
-[BLACK pieces (384), WHITE pieces (384)]
-```
-
-Same as before - just better organized internally!
+For neural network input, Virgo bitboards still flatten to `[768]`.  
+The training pipeline simply **reorders colors** so the side-to-move occupies the first 384 features.
 
 ## Files Modified
 
@@ -111,8 +107,11 @@ board = chess.Board()
 # Get Virgo-style [2, 6, 64]
 bitboards = BitboardFeatures.board_to_bitmap(board)
 
-# Get flattened [768] for model
-features = BitboardFeatures.board_to_features(board)
+# Get flattened Virgo features
+features = BitboardFeatures.board_to_features(board)  # [768]
+
+# Reorder so side-to-move is first (matches training pipeline)
+features_perspective = BitboardFeatures.board_to_features_for_side(board)  # [768]
 ```
 
 ### Access Patterns
