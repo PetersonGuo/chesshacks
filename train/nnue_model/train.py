@@ -1,6 +1,6 @@
 """
 Main training script for NNUE-based chess evaluation model
-Uses HalfKP features with sparse encoding for fast inference.
+Uses bitmap/bitboard features for efficient representation.
 NNUE is optimized for efficient incremental updates during search.
 """
 
@@ -20,7 +20,7 @@ from torch.utils.data import Dataset, DataLoader
 
 # Handle both direct execution and package import
 try:
-    from .model import ChessNNUEModel, HalfKP, count_parameters
+    from .model import ChessNNUEModel, BitboardFeatures, count_parameters
     from ..config import get_config, TrainingConfig
     from ..download_data import download_and_process_lichess_data
     from ..upload_to_hf import upload_model_to_hf
@@ -28,18 +28,18 @@ try:
 except ImportError:
     # Add parent directory to path for direct execution
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-    from train.nnue_model.model import ChessNNUEModel, HalfKP, count_parameters
+    from train.nnue_model.model import ChessNNUEModel, BitboardFeatures, count_parameters
     from train.config import get_config, TrainingConfig
     from train.download_data import download_and_process_lichess_data
     from train.upload_to_hf import upload_model_to_hf
     from train.dataset import ChessPositionDatasetSparse, collate_sparse, create_dataloaders_sparse
 
 
-class ChessBoardDatasetSparse(Dataset):
+class ChessBoardDatasetBitmap(Dataset):
     """
-    PyTorch Dataset for chess positions with evaluations using sparse NNUE features
+    PyTorch Dataset for chess positions with evaluations using bitmap NNUE features
     Includes normalization support
-    
+
     Expected data format (JSONL - one JSON object per line):
         {"fen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", "eval": 0.15}
         {"fen": "...", "eval": -0.5}
@@ -49,7 +49,7 @@ class ChessBoardDatasetSparse(Dataset):
     def __init__(self, data_path: str, max_positions: Optional[int] = None,
                  score_min: Optional[float] = None, score_max: Optional[float] = None,
                  normalize: bool = True):
-        """Initialize sparse dataset"""
+        """Initialize bitmap dataset"""
         self.data_path = data_path
         self.positions = []
         self.evaluations = []
@@ -64,7 +64,7 @@ class ChessBoardDatasetSparse(Dataset):
             raise ValueError(f"Only JSONL format is supported. Got: {data_path}")
 
         self._load_jsonl(data_path, max_positions)
-        
+
         # Compute normalization statistics if enabled
         if self.normalize and len(self.evaluations) > 0:
             eval_array = np.array(self.evaluations)
@@ -72,10 +72,10 @@ class ChessBoardDatasetSparse(Dataset):
             self.eval_std = float(np.std(eval_array))
             if self.eval_std < 1e-6:  # Avoid division by zero
                 self.eval_std = 1.0
-            print(f"Loaded {len(self.positions)} positions from {data_path} (sparse mode)")
+            print(f"Loaded {len(self.positions)} positions from {data_path} (bitmap mode)")
             print(f"Evaluation stats: mean={self.eval_mean:.2f}, std={self.eval_std:.2f}")
         else:
-            print(f"Loaded {len(self.positions)} positions from {data_path} (sparse mode)")
+            print(f"Loaded {len(self.positions)} positions from {data_path} (bitmap mode)")
 
     def _load_jsonl(self, path, max_positions):
         """Load positions from JSONL file (one JSON per line)"""
@@ -87,26 +87,26 @@ class ChessBoardDatasetSparse(Dataset):
                 item = json.loads(line)
                 self.positions.append(item['fen'])
                 eval_score = float(item['eval'])
-                
+
                 # Clip score if clipping parameters are provided
                 if self.score_min is not None or self.score_max is not None:
                     if self.score_min is not None:
                         eval_score = max(self.score_min, eval_score)
                     if self.score_max is not None:
                         eval_score = min(self.score_max, eval_score)
-                
+
                 self.evaluations.append(eval_score)
 
     def __len__(self):
         return len(self.positions)
 
-    def __getitem__(self, idx: int) -> Tuple[List[int], List[int], float]:
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, float]:
         """
-        Get a training sample with sparse encoding
+        Get a training sample with bitmap encoding
 
         Returns:
-            Tuple of (white_feature_indices, black_feature_indices, evaluation)
-            where indices are lists of active feature indices
+            Tuple of (bitmap_features, evaluation)
+            where bitmap_features is a tensor of shape [768] (12 bitboards × 64 squares)
         """
         fen = self.positions[idx]
         eval_score = self.evaluations[idx]
@@ -114,84 +114,58 @@ class ChessBoardDatasetSparse(Dataset):
         # Parse FEN to board
         board = chess.Board(fen)
 
-        # Get HalfKP features as sparse indices
-        white_idx, black_idx = HalfKP.board_to_features(board)
+        # Get bitmap features
+        features = BitboardFeatures.board_to_features(board)
 
-        # If it's black to move, swap feature perspectives and flip the evaluation
+        # If it's black to move, flip the evaluation
         if board.turn == chess.BLACK:
-            white_idx, black_idx = black_idx, white_idx
             eval_score = -eval_score
 
         # Normalize evaluation if enabled
         if self.normalize:
             eval_score = (eval_score - self.eval_mean) / self.eval_std
 
-        return white_idx, black_idx, eval_score
+        return features, eval_score
 
 
-def collate_fn_sparse_normalized(batch: list) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+def collate_fn_bitmap(batch: list) -> Tuple[torch.Tensor, torch.Tensor]:
     """
-    Custom collate function for sparse batching with normalized evaluations
+    Custom collate function for bitmap batching with normalized evaluations
 
     Returns:
-        Tuple of (white_indices, white_values, black_indices, black_values, evaluations)
-        where indices are [2, nnz] tensors with (batch_idx, feature_idx) coordinates
+        Tuple of (features, evaluations)
+        where features is [batch_size, 768] and evaluations is [batch_size, 1]
     """
-    white_indices_list = []
-    black_indices_list = []
+    features_list = []
     evaluations = []
 
-    for batch_idx, (white_idx, black_idx, eval_score) in enumerate(batch):
-        # Create 2D coordinates: (batch_index, feature_index)
-        batch_indices = torch.full((len(white_idx),), batch_idx, dtype=torch.long)
-        white_feature_indices = torch.tensor(white_idx, dtype=torch.long)
-        white_coords = torch.stack([batch_indices, white_feature_indices], dim=0)
-        white_indices_list.append(white_coords)
-
-        batch_indices = torch.full((len(black_idx),), batch_idx, dtype=torch.long)
-        black_feature_indices = torch.tensor(black_idx, dtype=torch.long)
-        black_coords = torch.stack([batch_indices, black_feature_indices], dim=0)
-        black_indices_list.append(black_coords)
-
+    for features, eval_score in batch:
+        features_list.append(features)
         evaluations.append(eval_score)
 
-    # Concatenate all sparse coordinates
-    white_indices = torch.cat(white_indices_list, dim=1)  # [2, total_nnz]
-    black_indices = torch.cat(black_indices_list, dim=1)  # [2, total_nnz]
+    # Stack features and evaluations
+    features = torch.stack(features_list, dim=0)  # [batch_size, 768]
+    evaluations = torch.tensor(evaluations, dtype=torch.float32).unsqueeze(1)  # [batch_size, 1]
 
-    # All values are 1.0 for binary features
-    white_values = torch.ones(white_indices.shape[1], dtype=torch.float32)
-    black_values = torch.ones(black_indices.shape[1], dtype=torch.float32)
-
-    # Stack evaluations
-    evaluations = torch.tensor(evaluations, dtype=torch.float32).unsqueeze(1)
-
-    return white_indices, white_values, black_indices, black_values, evaluations
+    return features, evaluations
 
 
-def create_dataloaders(train_path: str, val_path: Optional[str] = None, 
+def create_dataloaders(train_path: str, val_path: Optional[str] = None,
                        batch_size: int = 256, num_workers: int = 0,
-                       max_train_positions: Optional[int] = None, 
+                       max_train_positions: Optional[int] = None,
                        max_val_positions: Optional[int] = None,
                        score_min: Optional[float] = None,
                        score_max: Optional[float] = None,
                        device: Optional[torch.device] = None,
                        normalize: bool = True) -> Tuple[DataLoader, Optional[DataLoader]]:
     """
-    Create training and validation dataloaders with sparse encoding
-
-    Note: num_workers must be 0 for sparse tensors to avoid multiprocessing issues.
-    Sparse encoding is still much faster due to reduced memory usage and computation.
+    Create training and validation dataloaders with bitmap encoding
 
     Returns:
         Tuple of (train_loader, val_loader). val_loader is None if val_path not provided
     """
-    if num_workers > 0:
-        print("Warning: num_workers > 0 with sparse encoding. Setting to 0 to avoid multiprocessing issues.")
-        num_workers = 0
-
     # Create training dataset
-    train_dataset = ChessBoardDatasetSparse(train_path, max_positions=max_train_positions,
+    train_dataset = ChessBoardDatasetBitmap(train_path, max_positions=max_train_positions,
                                            score_min=score_min, score_max=score_max,
                                            normalize=normalize)
     train_loader = DataLoader(
@@ -199,15 +173,15 @@ def create_dataloaders(train_path: str, val_path: Optional[str] = None,
         batch_size=batch_size,
         shuffle=True,
         num_workers=num_workers,
-        collate_fn=collate_fn_sparse_normalized,
-        pin_memory=False  # Sparse tensors don't work well with pin_memory
+        collate_fn=collate_fn_bitmap,
+        pin_memory=True if device and device.type == 'cuda' else False
     )
 
     # Create validation dataset if path provided
     val_loader = None
     if val_path:
         # Use same normalization stats from training set
-        val_dataset = ChessBoardDatasetSparse(val_path, max_positions=max_val_positions,
+        val_dataset = ChessBoardDatasetBitmap(val_path, max_positions=max_val_positions,
                                              score_min=score_min, score_max=score_max,
                                              normalize=False)  # Don't recompute stats
         if normalize and hasattr(train_dataset, 'eval_mean'):
@@ -219,8 +193,8 @@ def create_dataloaders(train_path: str, val_path: Optional[str] = None,
             batch_size=batch_size,
             shuffle=False,
             num_workers=num_workers,
-            collate_fn=collate_fn_sparse_normalized,
-            pin_memory=False
+            collate_fn=collate_fn_bitmap,
+            pin_memory=True if device and device.type == 'cuda' else False
         )
 
     return train_loader, val_loader
@@ -395,19 +369,16 @@ def train_epoch(model: torch.nn.Module, train_loader: torch.utils.data.DataLoade
     pbar = tqdm(train_loader, desc=f'Epoch {epoch+1}/{config.num_epochs}',
                 disable=not config.verbose)
 
-    for batch_idx, (white_indices, white_values, black_indices, black_values, targets) in enumerate(pbar):
+    for batch_idx, (features, targets) in enumerate(pbar):
         # Move to device
-        white_indices = white_indices.to(device)
-        white_values = white_values.to(device)
-        black_indices = black_indices.to(device)
-        black_values = black_values.to(device)
+        features = features.to(device)
         targets = targets.to(device)
 
         # Zero gradients
         optimizer.zero_grad()
 
         # Forward pass
-        outputs = model(white_indices, white_values, black_indices, black_values)
+        outputs = model(features)
         loss = criterion(outputs, targets)
 
         # Backward pass
@@ -452,16 +423,13 @@ def validate(model: torch.nn.Module, val_loader: torch.utils.data.DataLoader,
 
     with torch.no_grad():
         pbar = tqdm(val_loader, desc='Validating', disable=not config.verbose)
-        for white_indices, white_values, black_indices, black_values, targets in pbar:
+        for features, targets in pbar:
             # Move to device
-            white_indices = white_indices.to(device)
-            white_values = white_values.to(device)
-            black_indices = black_indices.to(device)
-            black_values = black_values.to(device)
+            features = features.to(device)
             targets = targets.to(device)
 
             # Forward pass
-            outputs = model(white_indices, white_values, black_indices, black_values)
+            outputs = model(features)
 
             # Calculate loss
             loss = criterion(outputs, targets)
@@ -696,7 +664,7 @@ def train(config: TrainingConfig) -> Tuple[torch.nn.Module, Dict[str, list]]:
 
     print("\nLoading data...")
     print(f"Batch size: {config.batch_size}")
-    print(f"Num workers: {config.num_workers} (will be set to 0 for sparse encoding)")
+    print(f"Num workers: {config.num_workers}")
     print(f"Device: {device}")
     train_loader, val_loader = create_dataloaders(
         train_path=config.train_data_path,
@@ -959,18 +927,180 @@ def train(config: TrainingConfig) -> Tuple[torch.nn.Module, Dict[str, list]]:
     return model, training_history
 
 
+def find_latest_checkpoint(checkpoint_dir: str) -> Optional[str]:
+    """
+    Find the latest checkpoint in the checkpoint directory
+
+    Args:
+        checkpoint_dir: Directory containing checkpoints
+
+    Returns:
+        Path to latest checkpoint, or None if no checkpoints found
+    """
+    if not os.path.exists(checkpoint_dir):
+        return None
+
+    # Look for checkpoint files
+    checkpoint_files = []
+    for filename in os.listdir(checkpoint_dir):
+        if filename.startswith('checkpoint_epoch_') and filename.endswith('.pt'):
+            filepath = os.path.join(checkpoint_dir, filename)
+            checkpoint_files.append(filepath)
+
+    if not checkpoint_files:
+        return None
+
+    # Sort by modification time (most recent first)
+    checkpoint_files.sort(key=lambda x: os.path.getmtime(x), reverse=True)
+
+    return checkpoint_files[0]
+
+
+def prompt_resume_training(checkpoint_dir: str) -> Optional[str]:
+    """
+    Check for existing checkpoints and prompt user to resume
+
+    Args:
+        checkpoint_dir: Directory containing checkpoints
+
+    Returns:
+        Path to checkpoint to resume from, or None to start fresh
+    """
+    latest_checkpoint = find_latest_checkpoint(checkpoint_dir)
+
+    if latest_checkpoint is None:
+        return None
+
+    # Load checkpoint to get info
+    try:
+        checkpoint = torch.load(latest_checkpoint, map_location='cpu')
+        epoch = checkpoint.get('epoch', 'unknown')
+        train_loss = checkpoint.get('train_loss', 'unknown')
+        val_loss = checkpoint.get('val_loss', 'unknown')
+
+        print("\n" + "=" * 80)
+        print("EXISTING CHECKPOINT FOUND")
+        print("=" * 80)
+        print(f"Checkpoint: {os.path.basename(latest_checkpoint)}")
+        print(f"Last epoch: {epoch}")
+        print(f"Train loss: {train_loss}")
+        print(f"Val loss: {val_loss}")
+        print("=" * 80)
+        print("\nOptions:")
+        print("  1. Resume training from this checkpoint")
+        print("  2. Start fresh training (existing checkpoints will be kept)")
+        print("  3. Exit")
+        print("=" * 80)
+
+        # Auto-resume if running in non-interactive mode
+        if not sys.stdin.isatty():
+            print("Non-interactive mode detected - auto-resuming from checkpoint")
+            return latest_checkpoint
+
+        choice = input("\nYour choice (1/2/3): ").strip()
+
+        if choice == '1':
+            print(f"\n✓ Resuming from: {latest_checkpoint}")
+            return latest_checkpoint
+        elif choice == '2':
+            print("\n✓ Starting fresh training")
+            return None
+        else:
+            print("\n✓ Exiting")
+            sys.exit(0)
+
+    except Exception as e:
+        print(f"Warning: Could not load checkpoint {latest_checkpoint}: {e}")
+        return None
+
+
 def main():
     """Main entry point"""
-    config = get_config('default')
+    import argparse
+
+    parser = argparse.ArgumentParser(description='Train NNUE chess evaluation model')
+    parser.add_argument('--config', type=str, default='rtx5070',
+                       choices=['default', 'fast', 'quality', 'large_scale', 'rtx5070', 'rtx5070_quality'],
+                       help='Training configuration to use')
+    parser.add_argument('--resume', type=str, default=None,
+                       help='Path to checkpoint to resume from (or "auto" to auto-detect)')
+    parser.add_argument('--no-prompt', action='store_true',
+                       help='Skip resume prompt and auto-resume if checkpoint exists')
+    parser.add_argument('--fresh', action='store_true',
+                       help='Start fresh training even if checkpoints exist')
+
+    args = parser.parse_args()
+
+    # Load configuration
+    config = get_config(args.config)
     config.__post_init__()
 
-    print("NNUE Training Configuration")
+    # Handle checkpoint resumption
+    if args.fresh:
+        print("\n✓ Starting fresh training (--fresh flag set)")
+        config.resume_from = None
+    elif args.resume:
+        if args.resume == 'auto':
+            latest_checkpoint = find_latest_checkpoint(config.checkpoint_dir)
+            if latest_checkpoint:
+                print(f"\n✓ Auto-resuming from: {latest_checkpoint}")
+                config.resume_from = latest_checkpoint
+            else:
+                print("\n✓ No checkpoint found - starting fresh training")
+                config.resume_from = None
+        else:
+            if os.path.exists(args.resume):
+                print(f"\n✓ Resuming from: {args.resume}")
+                config.resume_from = args.resume
+            else:
+                print(f"\n✗ Checkpoint not found: {args.resume}")
+                sys.exit(1)
+    elif args.no_prompt:
+        # Auto-resume without prompt
+        latest_checkpoint = find_latest_checkpoint(config.checkpoint_dir)
+        if latest_checkpoint:
+            print(f"\n✓ Auto-resuming from: {latest_checkpoint}")
+            config.resume_from = latest_checkpoint
+    else:
+        # Interactive prompt
+        resume_checkpoint = prompt_resume_training(config.checkpoint_dir)
+        if resume_checkpoint:
+            config.resume_from = resume_checkpoint
+
+    print("\nNNUE Training Configuration")
     print("=" * 80)
     for field, value in config.__dict__.items():
         print(f"{field:30s}: {value}")
     print("=" * 80)
 
-    train(config)
+    try:
+        train(config)
+    except KeyboardInterrupt:
+        print("\n\n" + "=" * 80)
+        print("Training interrupted by user")
+        print("=" * 80)
+        latest = find_latest_checkpoint(config.checkpoint_dir)
+        if latest:
+            print(f"\nYou can resume training later with:")
+            print(f"  python train/nnue_model/train.py --resume {latest}")
+            print(f"  or")
+            print(f"  python train/nnue_model/train.py --resume auto")
+        sys.exit(0)
+    except Exception as e:
+        print("\n\n" + "=" * 80)
+        print("Training failed with error:")
+        print("=" * 80)
+        print(f"{e}")
+        import traceback
+        traceback.print_exc()
+        print("\n" + "=" * 80)
+        latest = find_latest_checkpoint(config.checkpoint_dir)
+        if latest:
+            print(f"\nYou can try resuming from the last checkpoint:")
+            print(f"  python train/nnue_model/train.py --resume {latest}")
+            print(f"  or")
+            print(f"  python train/nnue_model/train.py --resume auto")
+        sys.exit(1)
 
 
 if __name__ == '__main__':

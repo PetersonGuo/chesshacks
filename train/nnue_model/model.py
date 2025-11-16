@@ -1,6 +1,6 @@
 """
 NNUE (Efficiently Updatable Neural Network) Model Architecture
-HalfKP variant for chess position evaluation - optimized for fast inference
+Bitmap-based variant for chess position evaluation - optimized for fast inference
 """
 
 import torch
@@ -14,170 +14,140 @@ class ClippedReLU(nn.Module):
         return torch.clamp(x, 0.0, 1.0)
 
 
-class SparseLinear(nn.Module):
+class BitboardFeatures:
     """
-    Efficient sparse linear layer for NNUE feature transformer
+    Virgo-style bitboard representation for NNUE
+    Uses [2 colors][6 piece types] organization for efficient representation
 
-    Performs linear transformation on sparse inputs by only accessing
-    weights corresponding to active features, avoiding dense matrix multiplication.
+    Follows the Virgo chess engine bitboard structure:
+    - pieces[BLACK][PAWN], pieces[BLACK][KNIGHT], ..., pieces[BLACK][KING]
+    - pieces[WHITE][PAWN], pieces[WHITE][KNIGHT], ..., pieces[WHITE][KING]
     """
+    # Piece type indices (Virgo-style)
+    PAWN = 0
+    KNIGHT = 1
+    BISHOP = 2
+    ROOK = 3
+    QUEEN = 4
+    KING = 5
 
-    def __init__(self, in_features: int, out_features: int):
-        super(SparseLinear, self).__init__()
-        self.in_features = in_features
-        self.out_features = out_features
+    # Player indices (Virgo-style)
+    BLACK = 0
+    WHITE = 1
 
-        # Weight matrix: [in_features, out_features]
-        # Transposed from standard nn.Linear for efficient indexing
-        self.weight = nn.Parameter(torch.empty(in_features, out_features))
-        self.bias = nn.Parameter(torch.empty(out_features))
-
-        self.reset_parameters()
-
-    def reset_parameters(self):
-        """Initialize weights using Xavier initialization"""
-        nn.init.xavier_uniform_(self.weight, gain=0.5)
-        nn.init.constant_(self.bias, 0)
-
-    def forward(self, indices: torch.Tensor, values: torch.Tensor, batch_size: int) -> torch.Tensor:
-        """
-        Forward pass with sparse inputs
-
-        Args:
-            indices: [2, nnz] tensor with (batch_idx, feature_idx) coordinates
-            values: [nnz] tensor with feature values (typically all 1.0)
-            batch_size: Number of samples in the batch
-
-        Returns:
-            Dense output tensor [batch_size, out_features]
-        """
-        # Extract batch and feature indices
-        batch_idx = indices[0]  # [nnz]
-        feature_idx = indices[1]  # [nnz]
-
-        # Gather weights for active features: [nnz, out_features]
-        active_weights = self.weight[feature_idx]  # [nnz, out_features]
-
-        # Multiply by values (element-wise): [nnz, out_features]
-        weighted = active_weights * values.unsqueeze(1)  # [nnz, out_features]
-
-        # Scatter-add to output tensor
-        output = torch.zeros(batch_size, self.out_features,
-                           dtype=weighted.dtype, device=weighted.device)
-        output.index_add_(0, batch_idx, weighted)
-
-        # Add bias
-        output = output + self.bias
-
-        return output
-
-
-class HalfKP:
-    """
-    HalfKP feature representation for NNUE
-    Features: King position + Piece positions (Half of the board from king's perspective)
-    """
-    # Piece type indices (excluding king)
+    # Map chess.py constants to our indices
     PIECE_TO_INDEX = {
-        chess.PAWN: 0,
-        chess.KNIGHT: 1,
-        chess.BISHOP: 2,
-        chess.ROOK: 3,
-        chess.QUEEN: 4,
+        chess.PAWN: PAWN,
+        chess.KNIGHT: KNIGHT,
+        chess.BISHOP: BISHOP,
+        chess.ROOK: ROOK,
+        chess.QUEEN: QUEEN,
+        chess.KING: KING,
     }
 
-    NUM_PIECE_TYPES = 10  # 5 piece types × 2 colors
+    COLOR_TO_INDEX = {
+        chess.BLACK: BLACK,
+        chess.WHITE: WHITE,
+    }
+
+    NUM_PIECE_TYPES = 6
+    NUM_COLORS = 2
     NUM_SQUARES = 64
-    KING_SQUARES = 64
 
-    # Total feature size: 64 (king squares) × 64 (piece squares) × 10 (piece types)
-    FEATURE_SIZE = KING_SQUARES * NUM_SQUARES * NUM_PIECE_TYPES
-
-    @staticmethod
-    def get_feature_index(king_square, piece_square, piece_type, piece_color):
-        """
-        Calculate the feature index for a piece relative to king position
-
-        Args:
-            king_square: Square index of the king (0-63)
-            piece_square: Square index of the piece (0-63)
-            piece_type: chess.PAWN, KNIGHT, etc.
-            piece_color: chess.WHITE or chess.BLACK
-
-        Returns:
-            Feature index in the input vector
-        """
-        piece_idx = HalfKP.PIECE_TO_INDEX[piece_type]
-        if piece_color == chess.BLACK:
-            piece_idx += 5
-
-        return king_square * (HalfKP.NUM_SQUARES * HalfKP.NUM_PIECE_TYPES) + \
-               piece_square * HalfKP.NUM_PIECE_TYPES + \
-               piece_idx
+    # Total feature size: 2 colors × 6 pieces × 64 squares = 768 features
+    FEATURE_SIZE = NUM_COLORS * NUM_PIECE_TYPES * NUM_SQUARES
 
     @staticmethod
-    def board_to_features(board: chess.Board):
+    def board_to_bitmap(board: chess.Board) -> torch.Tensor:
         """
-        Convert chess board to HalfKP feature vector
+        Convert chess board to Virgo-style bitmap representation
 
         Args:
             board: python-chess Board object
 
         Returns:
-            Tuple of (white_features, black_features) as sparse indices
+            Tensor of shape [2, 6, 64] representing bitboards in Virgo format:
+            - bitboards[color][piece_type][square] = 1 if piece present, 0 otherwise
+            - color: BLACK=0, WHITE=1
+            - piece_type: PAWN=0, KNIGHT=1, BISHOP=2, ROOK=3, QUEEN=4, KING=5
         """
-        white_king_sq = board.king(chess.WHITE)
-        black_king_sq = board.king(chess.BLACK)
+        # Initialize empty bitboards: [2 colors, 6 pieces, 64 squares]
+        bitboards = torch.zeros(
+            BitboardFeatures.NUM_COLORS,
+            BitboardFeatures.NUM_PIECE_TYPES,
+            BitboardFeatures.NUM_SQUARES,
+            dtype=torch.float32
+        )
 
-        white_features = []
-        black_features = []
-
-        # Iterate through all pieces on the board
+        # Iterate through all squares
         for square in chess.SQUARES:
             piece = board.piece_at(square)
-            if piece is None or piece.piece_type == chess.KING:
+            if piece is None:
                 continue
 
-            # Features from white's perspective
-            white_idx = HalfKP.get_feature_index(
-                white_king_sq, square, piece.piece_type, piece.color
-            )
-            white_features.append(white_idx)
+            # Get color and piece type indices (Virgo-style)
+            color_idx = BitboardFeatures.COLOR_TO_INDEX[piece.color]
+            piece_idx = BitboardFeatures.PIECE_TO_INDEX[piece.piece_type]
 
-            # Features from black's perspective (flip the board)
-            black_square = chess.square_mirror(square)
-            black_king_sq_flipped = chess.square_mirror(black_king_sq)
-            black_idx = HalfKP.get_feature_index(
-                black_king_sq_flipped, black_square, piece.piece_type,
-                not piece.color  # Flip color from black's perspective
-            )
-            black_features.append(black_idx)
+            # Set bit: pieces[color][piece_type][square]
+            bitboards[color_idx, piece_idx, square] = 1.0
 
-        return white_features, black_features
+        return bitboards
+
+    @staticmethod
+    def board_to_features(board: chess.Board) -> torch.Tensor:
+        """
+        Convert chess board to flattened bitmap features
+
+        Args:
+            board: python-chess Board object
+
+        Returns:
+            Flattened bitmap tensor of shape [768] (2 × 6 × 64)
+            Layout: [BLACK pieces (all types), WHITE pieces (all types)]
+        """
+        bitboards = BitboardFeatures.board_to_bitmap(board)
+        return bitboards.flatten()
+
+    @staticmethod
+    def get_piece_bitboard(board: chess.Board, color: chess.Color, piece_type: chess.PieceType) -> torch.Tensor:
+        """
+        Get bitboard for a specific piece type and color (Virgo-style accessor)
+
+        Args:
+            board: python-chess Board object
+            color: chess.BLACK or chess.WHITE
+            piece_type: chess.PAWN, chess.KNIGHT, etc.
+
+        Returns:
+            Tensor of shape [64] with 1s where pieces are located
+        """
+        bitboards = BitboardFeatures.board_to_bitmap(board)
+        color_idx = BitboardFeatures.COLOR_TO_INDEX[color]
+        piece_idx = BitboardFeatures.PIECE_TO_INDEX[piece_type]
+        return bitboards[color_idx, piece_idx]
 
 
 class ChessNNUEModel(nn.Module):
     """
     NNUE Neural Network for chess position evaluation
-    Architecture: HalfKP features (sparse) → 256 → 32 → 32 → 1
-    
-    Uses sparse linear layers for the feature transformer, which is much more
-    efficient given the sparsity of HalfKP features (~0.1% active features).
-    This makes inference significantly faster than CNN models.
+    Architecture: Bitmap features (768) → 256 → 32 → 32 → 1
+
+    Uses bitmap/bitboard representation for efficient chess position encoding.
+    12 bitboards (6 piece types × 2 colors) × 64 squares = 768 input features.
     """
 
     def __init__(self, hidden_size=256, hidden2_size=32, hidden3_size=32):
         super(ChessNNUEModel, self).__init__()
 
-        self.input_size = HalfKP.FEATURE_SIZE
+        self.input_size = BitboardFeatures.FEATURE_SIZE
         self.hidden_size = hidden_size
 
-        # Sparse feature transformer: converts sparse HalfKP features to dense representation
-        # We have two perspectives (white and black), each gets transformed separately
-        self.ft = SparseLinear(self.input_size, hidden_size)
+        # Feature transformer: converts bitmap features to dense representation
+        self.ft = nn.Linear(self.input_size, hidden_size)
 
         # Hidden layers (dense)
-        self.fc1 = nn.Linear(hidden_size * 2, hidden2_size)  # *2 because we concat white+black
+        self.fc1 = nn.Linear(hidden_size, hidden2_size)
         self.fc2 = nn.Linear(hidden2_size, hidden3_size)
         self.fc3 = nn.Linear(hidden3_size, 1)
 
@@ -188,7 +158,7 @@ class ChessNNUEModel(nn.Module):
         # With normalization, we use a smaller scale
         self.output_scale = 3.0
 
-        # Initialize dense layer weights
+        # Initialize layer weights
         self._init_weights()
 
     def _init_weights(self):
@@ -199,28 +169,18 @@ class ChessNNUEModel(nn.Module):
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
 
-    def forward(self, white_indices, white_values, black_indices, black_values):
+    def forward(self, x):
         """
-        Forward pass through the network with sparse inputs
+        Forward pass through the network with bitmap inputs
 
         Args:
-            white_indices: [2, nnz_w] tensor with (batch_idx, feature_idx) for white
-            white_values: [nnz_w] tensor with feature values for white
-            black_indices: [2, nnz_b] tensor with (batch_idx, feature_idx) for black
-            black_values: [nnz_b] tensor with feature values for black
+            x: [batch_size, 768] tensor with bitmap features
 
         Returns:
             Position evaluation [batch_size, 1] (normalized)
         """
-        # Infer batch size from indices
-        batch_size = int(white_indices[0].max().item()) + 1
-
-        # Transform features from both perspectives using sparse operations
-        w = self.crelu(self.ft(white_indices, white_values, batch_size))
-        b = self.crelu(self.ft(black_indices, black_values, batch_size))
-
-        # Concatenate both perspectives
-        x = torch.cat([w, b], dim=1)
+        # Transform features
+        x = self.crelu(self.ft(x))
 
         # Pass through hidden layers
         x = self.crelu(self.fc1(x))
@@ -242,39 +202,24 @@ class ChessNNUEModel(nn.Module):
             board: python-chess Board object
 
         Returns:
-            Evaluation score in centipawns (positive = white advantage)
+            Evaluation score (positive = white advantage)
         """
         self.eval()
         with torch.no_grad():
             params = next(self.parameters())
             device = params.device
 
-            # Get sparse features
-            white_idx, black_idx = HalfKP.board_to_features(board)
+            # Get bitmap features
+            features = BitboardFeatures.board_to_features(board)
+            features = features.unsqueeze(0).to(device)  # Add batch dimension
 
-            # Create sparse tensors for single position (batch_size=1)
-            white_indices = torch.tensor([[0] * len(white_idx), white_idx],
-                                       dtype=torch.long, device=device)
-            white_values = torch.ones(len(white_idx), dtype=torch.float32, device=device)
-
-            black_indices = torch.tensor([[0] * len(black_idx), black_idx],
-                                       dtype=torch.long, device=device)
-            black_values = torch.ones(len(black_idx), dtype=torch.float32, device=device)
-
-            if board.turn == chess.BLACK:
-                white_indices, black_indices = black_indices, white_indices
-                white_values, black_values = black_values, white_values
-                flip_sign = -1
-            else:
-                flip_sign = 1
+            # Account for side to move
+            flip_sign = -1 if board.turn == chess.BLACK else 1
 
             # Forward pass
-            score = self.forward(white_indices, white_values, black_indices, black_values)
+            score = self.forward(features)
 
-            if flip_sign == -1:
-                score = -score
-
-            return score.item()
+            return (score * flip_sign).item()
 
 
 def count_parameters(model: torch.nn.Module) -> int:
@@ -289,22 +234,40 @@ if __name__ == "__main__":
         hidden2_size=32,
         hidden3_size=32
     )
-    
-    print(f"NNUE Model Architecture:")
-    print(f"Input size: {model.input_size:,} (HalfKP features)")
+
+    print(f"NNUE Model Architecture (Virgo-style Bitboards):")
+    print(f"Input size: {model.input_size:,} (2 colors × 6 pieces × 64 squares)")
     print(f"Hidden size: {model.hidden_size}")
     print(f"Total parameters: {count_parameters(model):,}")
     print(f"\nModel structure:")
     print(model)
-    
+
     # Test with a starting position
     board = chess.Board()
-    white_idx, black_idx = HalfKP.board_to_features(board)
-    print(f"\nStarting position features:")
-    print(f"White features: {len(white_idx)} active features")
-    print(f"Black features: {len(black_idx)} active features")
-    
+
+    # Test Virgo-style bitboard representation
+    bitboards = BitboardFeatures.board_to_bitmap(board)
+    print(f"\nVirgo-style Bitboard Representation:")
+    print(f"Bitboards shape: {bitboards.shape} [colors, pieces, squares]")
+
+    # Show piece counts (Virgo-style access)
+    piece_names = ['Pawn', 'Knight', 'Bishop', 'Rook', 'Queen', 'King']
+    for color_name, color in [('Black', chess.BLACK), ('White', chess.WHITE)]:
+        print(f"\n{color_name} pieces:")
+        for piece_type, piece_name in zip([chess.PAWN, chess.KNIGHT, chess.BISHOP,
+                                           chess.ROOK, chess.QUEEN, chess.KING], piece_names):
+            piece_bb = BitboardFeatures.get_piece_bitboard(board, color, piece_type)
+            count = int(piece_bb.sum().item())
+            if count > 0:
+                print(f"  {piece_name}: {count}")
+
+    # Test flattened features
+    features = BitboardFeatures.board_to_features(board)
+    print(f"\nFlattened features:")
+    print(f"Feature vector shape: {features.shape}")
+    print(f"Non-zero features: {(features != 0).sum().item()}")
+
     # Test evaluation
     eval_score = model.evaluate_board(board)
-    print(f"Board evaluation: {eval_score:.2f} (normalized)")
+    print(f"\nBoard evaluation: {eval_score:.2f}")
 

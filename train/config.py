@@ -184,13 +184,114 @@ LARGE_SCALE_CONFIG = TrainingConfig(
     save_every_n_epochs=10,
 )
 
+# RTX 5070 optimized configuration
+RTX_5070_CONFIG = TrainingConfig(
+    # Device
+    device='cuda',
+
+    # Batch size optimized for RTX 5070 (12-16GB VRAM)
+    # With bitmap model (768 features), we can use very large batches
+    batch_size=4096,  # Large batch for efficient GPU utilization
+
+    # Data loading - optimize for fast PCIe 4.0+ transfer
+    num_workers=8,  # Balanced for CPU->GPU pipeline
+
+    # Training parameters
+    learning_rate=0.001,  # Higher LR works well with large batches
+    num_epochs=100,
+    weight_decay=1e-4,
+    max_grad_norm=1.0,
+    early_stopping_patience=20,
+
+    # Model architecture - balanced for speed and quality
+    hidden_size=256,
+    hidden2_size=32,
+    hidden3_size=32,
+
+    # Optimization
+    optimizer='adam',
+    scheduler='cosine',
+    warmup_epochs=5,
+    warmup_start_lr=1e-5,
+
+    # Loss function
+    loss_function='huber',
+
+    # Score clipping
+    eval_score_min=-1500,
+    eval_score_max=1500,
+
+    # Checkpointing
+    save_every_n_epochs=5,
+    save_best_only=False,
+    validate_every_n_epochs=1,
+
+    # Data - None = use all available data
+    max_train_positions=None,
+    max_val_positions=None,
+
+    # Logging
+    log_every_n_batches=50,
+    verbose=True,
+)
+
+# RTX 5070 high-quality configuration (larger model)
+RTX_5070_QUALITY_CONFIG = TrainingConfig(
+    # Device
+    device='cuda',
+
+    # Smaller batch for larger model
+    batch_size=2048,
+
+    # Data loading
+    num_workers=8,
+
+    # Training parameters
+    learning_rate=0.0005,  # Lower LR for stability with larger model
+    num_epochs=150,
+    weight_decay=1e-5,
+    max_grad_norm=1.0,
+    early_stopping_patience=25,
+
+    # Larger model architecture
+    hidden_size=512,  # Doubled from default
+    hidden2_size=64,  # Doubled from default
+    hidden3_size=64,  # Doubled from default
+
+    # Optimization
+    optimizer='adam',
+    scheduler='cosine',
+    warmup_epochs=10,
+    warmup_start_lr=1e-6,
+
+    # Loss function
+    loss_function='huber',
+
+    # Score clipping
+    eval_score_min=-1500,
+    eval_score_max=1500,
+
+    # Checkpointing
+    save_every_n_epochs=5,
+    save_best_only=False,
+    validate_every_n_epochs=1,
+
+    # Data
+    max_train_positions=None,
+    max_val_positions=None,
+
+    # Logging
+    log_every_n_batches=50,
+    verbose=True,
+)
+
 
 def get_config(config_name='default'):
     """
     Get a configuration by name
 
     Args:
-        config_name: One of 'default', 'fast', 'quality', 'large_scale'
+        config_name: One of 'default', 'fast', 'quality', 'large_scale', 'rtx5070', 'rtx5070_quality'
 
     Returns:
         TrainingConfig instance
@@ -200,6 +301,8 @@ def get_config(config_name='default'):
         'fast': FAST_CONFIG,
         'quality': QUALITY_CONFIG,
         'large_scale': LARGE_SCALE_CONFIG,
+        'rtx5070': RTX_5070_CONFIG,
+        'rtx5070_quality': RTX_5070_QUALITY_CONFIG,
     }
 
     if config_name not in configs:
