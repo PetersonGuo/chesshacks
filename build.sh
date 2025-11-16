@@ -85,34 +85,16 @@ ensure_clang_toolchain() {
     exit 1
 }
 
-ensure_unzip_tool() {
-    if command -v unzip >/dev/null 2>&1; then
-        return
-    fi
-    echo "Installing unzip via pip (--user)..."
-    if pip_install --user unzip; then
-        hash -r
-        if ! command -v unzip >/dev/null 2>&1; then
-            echo "ERROR: unzip still not available after installing via pip" >&2
-            exit 1
-        fi
-    else
-        echo "ERROR: Failed to install unzip via pip" >&2
-        exit 1
-    fi
-}
-
 # Run all tool checks in parallel for faster setup
 ensure_tool_via_pip "cmake" "cmake" &
 ensure_tool_via_pip "ninja" "ninja" &
-ensure_unzip_tool &
 ensure_clang_toolchain &
 wait  # Wait for all background jobs to complete; fails if any job fails
 
-if [[ ! -d "$SCRIPT_DIR/third_party/libtorch" ]]; then
-curl -LO https://download.pytorch.org/libtorch/cpu/libtorch-shared-with-deps-2.9.1%2Bcpu.zip
-    unzip libtorch-shared-with-deps-2.9.1%2Bcpu.zip
-    mv libtorch third_party/
+if [[ -d "$SCRIPT_DIR/third_party/libtorch" ]]; then
+    curl -LO https://download.pytorch.org/libtorch/cpu/libtorch-shared-with-deps-2.9.1%2Bcpu.zip
+    npm install --silent --prefix "$HOME/.local/extractzip" extract-zip
+    node "$HOME/.local/extractzip/node_modules/extract-zip/cli.js" libtorch-shared-with-deps-2.9.1%2Bcpu.zip `pwd`/third_party/
 fi
 
 TORCH_DIR="$SCRIPT_DIR/third_party/libtorch"
