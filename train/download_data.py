@@ -115,6 +115,7 @@ def stream_lichess_database(output_dir: Optional[str] = None, year: Optional[int
         year=year,
         month=month,
         rated_only=rated_only,
+        max_games=max_games,
         mode=download_mode,
         skip_redownload=skip_redownload
     )
@@ -125,12 +126,38 @@ def stream_lichess_database(output_dir: Optional[str] = None, year: Optional[int
     rated_only = params['rated_only']
     download_mode = params.get('mode', 'streaming')
     skip_redownload = params.get('skip_redownload', True)
+    max_games = params.get('max_games')
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Check for existing streaming file BEFORE any download attempts
+    if max_games and download_mode == 'streaming':
+        streaming_filename = f"lichess_games_streamed_{max_games}.pgn"
+        streaming_path = os.path.join(output_dir, streaming_filename)
+        if os.path.exists(streaming_path):
+            if skip_redownload:
+                # Count games in existing file to verify it has enough
+                try:
+                    with open(streaming_path, 'r', encoding='utf-8') as f:
+                        existing_games = sum(1 for line in f if line.startswith('[Event'))
+                    if existing_games >= max_games:
+                        print(f"✓ Found existing streaming file: {streaming_path}")
+                        print(f"  Games: {existing_games}")
+                        print(f"  File size: {os.path.getsize(streaming_path) / (1024**2):.2f} MB")
+                        print("  Skipping download. Set skip_redownload=False to re-download")
+                        return streaming_path
+                    else:
+                        print(f"⚠ Existing file has only {existing_games} games, need {max_games}. Will re-download...")
+                except Exception as e:
+                    print(f"⚠ Warning: Could not verify existing streaming file: {e}")
+                    print("  Will re-download...")
+            else:
+                print(f"Found existing streaming file: {streaming_path}")
+                print("  skip_redownload=False, will re-download...")
 
     # Auto-detect latest database if year/month not specified
     if year is None or month is None:
         year, month = _get_latest_lichess_database()
-
-    os.makedirs(output_dir, exist_ok=True)
 
     month_str = f"{month:02d}"
     date_str = f"{year}-{month_str}"
@@ -152,25 +179,6 @@ def stream_lichess_database(output_dir: Optional[str] = None, year: Optional[int
 
     # Use streaming mode to download only needed games
     if download_mode == 'streaming':
-        # Check if we already have a streaming file with enough games
-        if max_games:
-            streaming_filename = f"lichess_games_streamed_{max_games}.pgn"
-            streaming_path = os.path.join(output_dir, streaming_filename)
-            if skip_redownload and os.path.exists(streaming_path):
-                # Count games in existing file to verify it has enough
-                try:
-                    with open(streaming_path, 'r', encoding='utf-8') as f:
-                        existing_games = sum(1 for line in f if line.startswith('[Event'))
-                    if existing_games >= max_games:
-                        print(f"Found existing streaming file: {streaming_path}")
-                        print(f"  Games: {existing_games}")
-                        print(f"  File size: {os.path.getsize(streaming_path) / (1024**2):.2f} MB")
-                        print("Skipping re-download. Set skip_redownload=False to re-download")
-                        return streaming_path
-                except Exception as e:
-                    print(f"Warning: Could not verify existing streaming file: {e}")
-                    print("Will re-download...")
-        
         print(f"Streaming Lichess database: {filename}")
         print(f"URL: {url}")
         print(f"Mode: Streaming (will only download games needed)")
