@@ -583,6 +583,33 @@ def download_and_process_lichess_data(
     
     print(f"Extracted {len(positions)} positions from {max_games or 'all'} games")
     
+    # Save extracted positions (before evaluation)
+    print("\n" + "=" * 80)
+    print("Saving extracted positions")
+    print("=" * 80)
+    
+    # Extract year/month from filename if not already set
+    if year is None or month is None:
+        import re
+        from datetime import datetime
+        match = re.search(r'(\d{4})-(\d{2})', os.path.basename(pgn_path))
+        if match:
+            year, month = int(match.group(1)), int(match.group(2))
+        else:
+            now = datetime.now()
+            year = year or now.year
+            month = month or now.month
+    
+    # Save raw positions to JSONL file
+    raw_positions_path = os.path.join(output_dir, f'lichess_positions_{year}-{month:02d}.jsonl')
+    with open(raw_positions_path, 'w') as f:
+        for fen in positions:
+            json.dump({'fen': fen}, f)
+            f.write('\n')
+    
+    print(f"Saved {len(positions)} raw positions to: {raw_positions_path}")
+    print(f"Output format: JSONL")
+    
     print("\n" + "=" * 80)
     print("Evaluating positions with Stockfish")
     print("=" * 80)
@@ -614,22 +641,10 @@ def download_and_process_lichess_data(
     print(f"\nEvaluated {len(evaluated_positions)} positions")
     
     print("\n" + "=" * 80)
-    print("Saving results")
+    print("Saving evaluated results")
     print("=" * 80)
     
-    # Extract year/month from filename if not already set
-    if year is None or month is None:
-        import re
-        from datetime import datetime
-        match = re.search(r'(\d{4})-(\d{2})', os.path.basename(pgn_path))
-        if match:
-            year, month = int(match.group(1)), int(match.group(2))
-        else:
-            now = datetime.now()
-            year = year or now.year
-            month = month or now.month
-    
-    # Save as JSONL format
+    # Save evaluated positions as JSONL format
     output_path = os.path.join(output_dir, f'lichess_evaluated_{year}-{month:02d}.jsonl')
     with open(output_path, 'w') as f:
         for fen, eval_score in evaluated_positions:
