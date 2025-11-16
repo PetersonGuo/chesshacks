@@ -375,17 +375,29 @@ def extract_positions_from_pgn(pgn_path: str, max_games: Optional[int] = None,
                 game_count += 1
                 board = game.board()
 
-                # Collect all positions from this game
-                all_positions = []
+                # Use reservoir sampling to sample positions on-the-fly
+                # This avoids collecting all positions in memory first
+                sampled_positions = []
+                move_count = 0
+                
                 for move in game.mainline_moves():
                     board.push(move)
-                    all_positions.append(board.fen())
+                    move_count += 1
+                    fen = board.fen()
+                    
+                    # Reservoir sampling: for first k positions, add directly
+                    if len(sampled_positions) < positions_per_game:
+                        sampled_positions.append(fen)
+                    else:
+                        # For position i, replace a random existing position with probability k/i
+                        # move_count is 0-indexed, so we've seen move_count+1 positions total
+                        j = random.randint(0, move_count)
+                        if j < positions_per_game:
+                            sampled_positions[j] = fen
 
-                # Randomly sample positions_per_game from all positions
-                num_to_sample = min(positions_per_game, len(all_positions))
-                if num_to_sample > 0:
-                    sampled = random.sample(all_positions, num_to_sample)
-                    for fen in sampled:
+                # Yield all sampled positions
+                if len(sampled_positions) > 0:
+                    for fen in sampled_positions:
                         total_positions_extracted += 1
                         yield fen
                 else:
