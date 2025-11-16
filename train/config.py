@@ -200,7 +200,7 @@ RTX_5070_CONFIG = TrainingConfig(
     num_workers=8,  # Balanced for CPU->GPU pipeline
 
     # Training parameters
-    learning_rate=0.001,  # Higher LR works well with large batches
+    learning_rate=0.0008,  # Slightly lower LR to reduce early overshoot
     num_epochs=100,
     weight_decay=1e-4,
     max_grad_norm=1.0,
@@ -214,7 +214,7 @@ RTX_5070_CONFIG = TrainingConfig(
     # Optimization
     optimizer='adam',
     scheduler='cosine',
-    warmup_epochs=5,
+    warmup_epochs=10,  # Longer warmup to smooth LR ramp
     warmup_start_lr=1e-5,
 
     # Loss function
