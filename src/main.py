@@ -18,11 +18,13 @@ if __package__ in (None, ""):
     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     if project_root not in sys.path:
         sys.path.insert(0, project_root)
+    from env_manager import get_env_config
     from native_loader import ensure_c_helpers
     from utils import GameContext, chess_manager
     import engine  # type: ignore
 else:
     from . import engine
+    from .env_manager import get_env_config
     from .native_loader import ensure_c_helpers
     from .utils import GameContext, chess_manager
 
@@ -30,18 +32,11 @@ project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 c_helpers = ensure_c_helpers()
-
-
-def _env_int(name: str, default: int) -> int:
-    try:
-        value = int(os.getenv(name, default))
-        return value if value > 0 else default
-    except (TypeError, ValueError):
-        return default
+ENV_CONFIG = get_env_config()
 
 
 # Global configuration
-SEARCH_DEPTH = _env_int("CHESSHACKS_MAX_DEPTH", 5)
+SEARCH_DEPTH = ENV_CONFIG.search_depth
 c_helpers.set_max_search_depth(SEARCH_DEPTH)
 NUM_THREADS = 0  # 0 = auto-detect CPU cores
 PROBABILITY_TEMPERATURE = 200.0
@@ -81,6 +76,13 @@ def load_nnue_model() -> bool:
 
 
 load_nnue_model()
+
+
+def _active_eval():
+    """Select the fastest available native evaluator."""
+    if NNUE_LOADED:
+        return c_helpers.evaluate
+    return c_helpers.evaluate_with_pst
 
 print("Chess Engine initialized:")
 print(f"  - CUDA available: {USE_CUDA}")
@@ -127,7 +129,7 @@ def _build_probability_distribution(board: chess.Board) -> Dict[Move, float]:
             bitboard_state,
             SEARCH_DEPTH,
             max_lines,
-            c_helpers.evaluate_material,
+            _active_eval(),
             transposition_table,
             NUM_THREADS,
             killer_moves,
@@ -152,21 +154,11 @@ def _build_probability_distribution(board: chess.Board) -> Dict[Move, float]:
 
 
 def _search_best_move(bitboard_state: c_helpers.BitboardState) -> str:
-    """Search for the best move, preferring NNUE evaluation when available."""
-    if NNUE_LOADED:
-        return c_helpers.get_best_move_uci_state(
-            bitboard_state,
-            SEARCH_DEPTH,
-            engine.nnue_evaluate,
-            transposition_table,
-            NUM_THREADS,
-            killer_moves,
-            history_table,
-            counter_move_table,
-        )
-    return c_helpers.get_best_move_uci_builtin_state(
+    """Search for the best move using the fastest native evaluation path."""
+    return c_helpers.get_best_move_uci_state(
         bitboard_state,
         SEARCH_DEPTH,
+        _active_eval(),
         transposition_table,
         NUM_THREADS,
         killer_moves,

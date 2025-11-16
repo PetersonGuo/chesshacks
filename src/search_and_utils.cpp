@@ -65,14 +65,14 @@ struct EvalProvider {
 };
 
 static EvalProvider
-MakeEvalProvider(const std::function<int(const std::string &)> &evaluate,
+MakeEvalProvider(const std::function<int(const std::string &)> &eval_func,
                  bool default_python) {
   EvalProvider provider;
-  provider.fen_eval = evaluate;
+  provider.fen_eval = eval_func;
   provider.use_python = default_python;
 
   using FenEvalPtr = int (*)(const std::string &);
-  if (auto fn_ptr = evaluate.template target<FenEvalPtr>()) {
+  if (auto fn_ptr = eval_func.template target<FenEvalPtr>()) {
     if (*fn_ptr == static_cast<FenEvalPtr>(&evaluate_with_pst)) {
       provider.board_eval = [](const BitboardState &board) {
         return evaluate_with_pst(board);
@@ -81,6 +81,16 @@ MakeEvalProvider(const std::function<int(const std::string &)> &evaluate,
     } else if (*fn_ptr == static_cast<FenEvalPtr>(&evaluate_material)) {
       provider.board_eval = [](const BitboardState &board) {
         return evaluate_material(board);
+      };
+      provider.use_python = false;
+    } else if (*fn_ptr == static_cast<FenEvalPtr>(&evaluate_nnue)) {
+      provider.board_eval = [](const BitboardState &board) {
+        return evaluate_nnue(board);
+      };
+      provider.use_python = false;
+    } else if (*fn_ptr == static_cast<FenEvalPtr>(&evaluate)) {
+      provider.board_eval = [](const BitboardState &board) {
+        return evaluate(board);
       };
       provider.use_python = false;
     }
@@ -722,8 +732,7 @@ static int alpha_beta_optimized_impl(
   }
 
   unsigned int hw_threads = std::max(1u, std::thread::hardware_concurrency());
-  int default_threads =
-      (hw_threads > 1) ? static_cast<int>(std::min(hw_threads, 4u)) : 1;
+  int default_threads = static_cast<int>(hw_threads);
 
   bool auto_threads = (num_threads <= 0);
   int effective_threads =
@@ -733,14 +742,15 @@ static int alpha_beta_optimized_impl(
   const int original_alpha = alpha;
   const int original_beta = beta;
 
-  if (effective_threads <= 1 || depth <= 2) {
+  bool use_parallel = (effective_threads > 1 && depth > 2);
+
+  if (!use_parallel) {
     return iterative_deepening(board, depth, alpha, beta, maximizingPlayer,
                                evaluate, tt_ref, killers_ptr, history_ptr,
                                counters_ptr, cont_history_ptr);
   }
 
-  // First do iterative deepening up to depth-1 to populate TT
-  if (depth > 1) {
+  if (use_parallel && depth > 1) {
     BitboardState prep_board = board;
     iterative_deepening(prep_board, depth - 1, alpha, beta, maximizingPlayer,
                         evaluate, tt_ref, killers_ptr, history_ptr,
@@ -757,74 +767,76 @@ static int alpha_beta_optimized_impl(
     int score;
   };
 
-  std::vector<std::future<MoveScore>> futures;
+  std::vector<MoveScore> results(legal_moves.size());
+  std::vector<char> evaluated(legal_moves.size(), 0);
+  std::atomic<size_t> next_index{0};
 
-  // Release GIL only when spawning threads
   nb::gil_scoped_release gil_release;
 
-  auto evaluate_move = [&](const Move &move) -> MoveScore {
-    BitboardState local_board = board;
-    Piece moving_piece = local_board.get_piece_at(move.from);
-    local_board.make_move(move);
+  int threads_to_use = std::max(
+      1, std::min(effective_threads, static_cast<int>(legal_moves.size())));
 
-    KillerMoves thread_killers = *killers_ptr;
-    HistoryTable thread_history = *history_ptr;
-    CounterMoveTable thread_counters;
-    ContinuationHistory thread_cont_history;
+  auto worker = [&](int /*thread_id*/) {
+    while (true) {
+      size_t idx = next_index.fetch_add(1);
+      if (idx >= legal_moves.size())
+        break;
 
-    int score = alpha_beta_internal(
-        local_board, depth - 1, alpha, beta, !maximizingPlayer, evaluate,
-        tt_ref, true, &thread_killers, 1, &thread_history, true,
-        &thread_counters, &thread_cont_history, moving_piece, move.to);
+      BitboardState local_board = board;
+      const Move &move = legal_moves[idx];
+      Piece moving_piece = local_board.get_piece_at(move.from);
+      local_board.make_move(move);
 
-    return {move, score};
+      KillerMoves thread_killers = *killers_ptr;
+      HistoryTable thread_history = *history_ptr;
+      CounterMoveTable thread_counters = *counters_ptr;
+      ContinuationHistory thread_cont_history;
+
+      int score = alpha_beta_internal(
+          local_board, depth - 1, alpha, beta, !maximizingPlayer, evaluate,
+          tt_ref, true, &thread_killers, 1, &thread_history, true,
+          &thread_counters, &thread_cont_history, moving_piece, move.to);
+
+      results[idx] = {move, score};
+      evaluated[idx] = 1;
+    }
   };
 
-  // Launch threads for moves - batch processing for better efficiency
-  std::vector<MoveScore> results;
-  results.reserve(legal_moves.size());
+  std::vector<std::thread> workers;
+  workers.reserve(std::max(0, threads_to_use - 1));
+  for (int t = 1; t < threads_to_use; ++t) {
+    workers.emplace_back(worker, t);
+  }
+  worker(0);
+  for (auto &th : workers) {
+    th.join();
+  }
 
-  for (size_t i = 0; i < legal_moves.size(); i++) {
-    // Wait for a slot to become available
-    while (futures.size() >= static_cast<size_t>(effective_threads)) {
-      // Efficiently wait for any future to complete
-      for (auto it = futures.begin(); it != futures.end();) {
-        if (it->wait_for(std::chrono::microseconds(100)) ==
-            std::future_status::ready) {
-          results.push_back(it->get());
-          it = futures.erase(it);
-        } else {
-          ++it;
-        }
+  int best_index = -1;
+  for (size_t i = 0; i < results.size(); ++i) {
+    if (!evaluated[i])
+      continue;
+    if (best_index == -1) {
+      best_index = static_cast<int>(i);
+      continue;
+    }
+    if (maximizingPlayer) {
+      if (results[i].score > results[best_index].score) {
+        best_index = static_cast<int>(i);
+      }
+    } else {
+      if (results[i].score < results[best_index].score) {
+        best_index = static_cast<int>(i);
       }
     }
-
-    futures.push_back(
-        std::async(std::launch::async, evaluate_move, legal_moves[i]));
   }
 
-  // Collect remaining results
-  for (auto &future : futures) {
-    results.push_back(future.get());
-  }
-
-  if (results.empty()) {
+  if (best_index == -1) {
     return maximizingPlayer ? MIN : MAX;
   }
 
-  auto best_it =
-      maximizingPlayer
-          ? std::max_element(results.begin(), results.end(),
-                             [](const MoveScore &a, const MoveScore &b) {
-                               return a.score < b.score;
-                             })
-          : std::min_element(results.begin(), results.end(),
-                             [](const MoveScore &a, const MoveScore &b) {
-                               return a.score < b.score;
-                             });
-
-  int best_score = best_it->score;
-  uint16_t best_move_code = best_it->move.encoded;
+  int best_score = results[best_index].score;
+  uint16_t best_move_code = results[best_index].move.encoded;
 
   TTEntryType entry_type = EXACT;
   if (best_score <= original_alpha) {
@@ -1495,57 +1507,57 @@ multi_pv_search(BitboardState board, int depth, int num_lines,
 
   // Parallelize move evaluation if num_threads > 1
   if (num_threads > 1 && legal_moves.size() > 1) {
-    // Release GIL before spawning threads
     nb::gil_scoped_release gil_release;
+    std::vector<ScoredMove> parallel_results(legal_moves.size());
+    std::vector<char> evaluated(legal_moves.size(), 0);
+    std::atomic<size_t> next_index{0};
+    int threads_to_use = std::max(
+        1, std::min(num_threads == 0
+                        ? static_cast<int>(std::thread::hardware_concurrency())
+                        : num_threads,
+                    static_cast<int>(legal_moves.size())));
 
-    std::vector<std::future<ScoredMove>> futures;
+    auto worker = [&](int /*thread_id*/) {
+      while (true) {
+        size_t idx = next_index.fetch_add(1);
+        if (idx >= legal_moves.size())
+          break;
 
-    auto evaluate_move = [&](const Move &move) -> ScoredMove {
-      BitboardState local_board = board;
-      local_board.make_move(move);
-      BitboardState after_board = local_board;
+        BitboardState local_board = board;
+        const Move &move = legal_moves[idx];
+        local_board.make_move(move);
+        BitboardState after_board = local_board;
 
-      KillerMoves thread_killers = *killers;
-      HistoryTable thread_history = *history;
-      CounterMoveTable thread_counters = *counters;
-      ContinuationHistory thread_cont_history;
-      Piece moving_piece = board.get_piece_at(move.from);
+        KillerMoves thread_killers = *killers;
+        HistoryTable thread_history = *history;
+        CounterMoveTable thread_counters = *counters;
+        ContinuationHistory thread_cont_history;
+        Piece moving_piece = board.get_piece_at(move.from);
 
-      int score = alpha_beta_internal(
-          local_board, depth - 1, MIN, MAX, !maximizing, eval_provider, *tt,
-          true, &thread_killers, 1, &thread_history, true, &thread_counters,
-          &thread_cont_history, moving_piece, move.to);
+        int score = alpha_beta_internal(
+            local_board, depth - 1, MIN, MAX, !maximizing, eval_provider, *tt,
+            true, &thread_killers, 1, &thread_history, true, &thread_counters,
+            &thread_cont_history, moving_piece, move.to);
 
-      return {move, std::move(after_board), score};
+        parallel_results[idx] = {move, std::move(after_board), score};
+        evaluated[idx] = 1;
+      }
     };
 
-    // Launch threads
-    int max_parallel =
-        (num_threads == 0) ? std::thread::hardware_concurrency() : num_threads;
-    if (max_parallel == 0)
-      max_parallel = 4;
-
-    for (size_t i = 0; i < legal_moves.size(); i++) {
-      // Wait for a thread to finish if we're at capacity
-      while (futures.size() >= static_cast<size_t>(max_parallel)) {
-        for (auto it = futures.begin(); it != futures.end();) {
-          if (it->wait_for(std::chrono::microseconds(100)) ==
-              std::future_status::ready) {
-            scored_moves.push_back(it->get());
-            it = futures.erase(it);
-          } else {
-            ++it;
-          }
-        }
-      }
-
-      futures.push_back(
-          std::async(std::launch::async, evaluate_move, legal_moves[i]));
+    std::vector<std::thread> workers;
+    workers.reserve(std::max(0, threads_to_use - 1));
+    for (int t = 1; t < threads_to_use; ++t) {
+      workers.emplace_back(worker, t);
+    }
+    worker(0);
+    for (auto &th : workers) {
+      th.join();
     }
 
-    // Collect remaining results
-    for (auto &future : futures) {
-      scored_moves.push_back(future.get());
+    for (size_t i = 0; i < parallel_results.size(); ++i) {
+      if (!evaluated[i])
+        continue;
+      scored_moves.push_back(parallel_results[i]);
     }
   } else {
     // Sequential evaluation (original code)

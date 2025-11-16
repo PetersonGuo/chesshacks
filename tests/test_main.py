@@ -6,17 +6,11 @@ import os
 import time
 
 # Add build directory to path
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, project_root)
 
 import c_helpers
-
-
-def _env_int(name: str, default: int) -> int:
-    try:
-        value = int(os.getenv(name, default))
-        return value if value > 0 else default
-    except (TypeError, ValueError):
-        return default
+from src.env_manager import get_env_config  # type: ignore
 
 
 # Detect CUDA (same as in main.py)
@@ -33,8 +27,9 @@ def has_cuda():
         return False
 
 
+ENV_CONFIG = get_env_config()
 USE_CUDA = has_cuda()
-SEARCH_DEPTH = _env_int("CHESSHACKS_MAX_DEPTH", 4)
+SEARCH_DEPTH = ENV_CONFIG.search_depth
 MAX_DEPTH = SEARCH_DEPTH
 c_helpers.set_max_search_depth(MAX_DEPTH)
 NUM_THREADS = 0

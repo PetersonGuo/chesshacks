@@ -126,7 +126,7 @@ This section merges everything that used to live in `IMPLEMENTATION.md`.
 
 The implementation also documents design decisions (e.g., quiescence depth limit = 4, aspiration window size, IID depth thresholds, etc.).
 
-> **Depth limit:** Runtime searches are clamped to depth 5 by default to keep move latency predictable. Override by setting `CHESSHACKS_MAX_DEPTH=<int>` (e.g., `8`) before running Python scripts or binaries if you explicitly want deeper searches.
+> **Depth limit:** Runtime searches are clamped to depth 4 by default to keep move latency predictable. Override by setting `CHESSHACKS_MAX_DEPTH=<int>` (e.g., `8`) before running Python scripts or binaries if you explicitly want deeper searches.
 
 ### 2.3 Performance Snapshot
 

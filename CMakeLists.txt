@@ -5,45 +5,29 @@ project(chesshacks LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# Try to find CUDA compiler using 'which nvcc'
-if(NOT DEFINED CMAKE_CUDA_COMPILER)
-    execute_process(
-        COMMAND which nvcc
-        OUTPUT_VARIABLE NVCC_PATH
-        OUTPUT_STRIP_TRAILING_WHITESPACE
-        ERROR_QUIET
-    )
-    if(NVCC_PATH)
-        set(CMAKE_CUDA_COMPILER "${NVCC_PATH}")
-        message(STATUS "Found nvcc at: ${NVCC_PATH}")
-    endif()
-endif()
+option(CHESSHACKS_ENABLE_CUDA "Enable CUDA acceleration" OFF)
 
-# Check if CUDA is available
-include(CheckLanguage)
-check_language(CUDA)
+set(CUDA_ENABLED OFF)
+if(CHESSHACKS_ENABLE_CUDA)
+    include(CheckLanguage)
+    check_language(CUDA)
+    if(CMAKE_CUDA_COMPILER)
+        enable_language(CUDA)
+        set(CUDA_ENABLED ON)
+        message(STATUS "CUDA enabled explicitly")
 
-# Enable CUDA by default if found
-if(CMAKE_CUDA_COMPILER)
-    enable_language(CUDA)
-    set(CUDA_ENABLED ON)
-    message(STATUS "CUDA found - GPU acceleration ENABLED")
-    
-    # Set CUDA architecture (auto-detect or use common values)
-    # Common values: 75 (Turing), 80/86 (Ampere), 89 (Ada), 90 (Hopper), 100 (Blackwell)
-    if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
-        set(CMAKE_CUDA_ARCHITECTURES 75 80 86 89 90)  # Support modern GPUs
+        if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+            set(CMAKE_CUDA_ARCHITECTURES 75 80 86 89 90)
+        endif()
+
+        set(CMAKE_CUDA_STANDARD 17)
+        set(CMAKE_CUDA_STANDARD_REQUIRED ON)
+        find_package(CUDAToolkit REQUIRED)
+    else()
+        message(FATAL_ERROR "CUDA requested via CHESSHACKS_ENABLE_CUDA, but no CUDA compiler was found.")
     endif()
-    
-    # Set CUDA standard
-    set(CMAKE_CUDA_STANDARD 17)
-    set(CMAKE_CUDA_STANDARD_REQUIRED ON)
-    
-    # Find CUDA Toolkit
-    find_package(CUDAToolkit REQUIRED)
 else()
-    set(CUDA_ENABLED OFF)
-    message(STATUS "CUDA not found - GPU acceleration disabled (CPU-only build)")
+    message(STATUS "CUDA disabled (set CHESSHACKS_ENABLE_CUDA=ON to enable)")
 endif()
 
 # Need Python interpreter + development headers/libs for nanobind.

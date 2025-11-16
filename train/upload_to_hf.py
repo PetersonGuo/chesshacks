@@ -3,14 +3,23 @@ Module for uploading NNUE model to Hugging Face Hub
 """
 
 import os
+import sys
 import json
 import torch
+from pathlib import Path
 from datetime import datetime
 from typing import Optional, Dict, Any, Tuple
 from huggingface_hub import HfApi, upload_folder, login, get_token
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.append(str(PROJECT_ROOT))
+
+from src.env_manager import get_env_config  # type: ignore
 from .config import TrainingConfig, get_config
 from .model import HalfKP
+
+ENV_CONFIG = get_env_config()
 
 def create_model_card(
     model_name: str,
@@ -488,7 +497,7 @@ def main():
             'hidden3_size': args.hidden3_size or 32,
         }
     
-    token = args.token or os.getenv('HF_TOKEN')
+    token = args.token or ENV_CONFIG.hf_token
     
     upload_model_to_hf(
         checkpoint_path=args.checkpoint,

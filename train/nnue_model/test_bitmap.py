@@ -4,7 +4,16 @@ Test script to verify bitmap NNUE implementation
 import os
 import sys
 
-import torch
+import pytest
+import train
+
+if not getattr(train, "HAS_TORCH", True):
+    pytest.skip(
+        f"Skipping NNUE training tests: {getattr(train, 'TORCH_IMPORT_ERROR', 'PyTorch missing')}",
+        allow_module_level=True,
+    )
+
+torch = pytest.importorskip("torch", reason="PyTorch is required for NNUE training tests")
 import chess
 
 try:

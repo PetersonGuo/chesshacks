@@ -3,7 +3,7 @@
 # Uses all available CPU cores and handles Python version detection
 
 set -euo pipefail
-
+export CHESSHACKS_MAX_DEPTH=6
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD_DIR="$SCRIPT_DIR/build"
 USER_LOCAL_BIN="$HOME/.local/bin"
@@ -31,6 +31,14 @@ echo "Using $NUM_CORES CPU cores for compilation"
 echo ""
 
 cd "$SCRIPT_DIR"
+
+ENABLE_CUDA="${CHESSHACKS_ENABLE_CUDA:-0}"
+if [[ "$ENABLE_CUDA" != "0" && "$ENABLE_CUDA" != "OFF" ]]; then
+    echo "CUDA build requested via CHESSHACKS_ENABLE_CUDA"
+    CMAKE_CUDA_FLAG="-DCHESSHACKS_ENABLE_CUDA=ON"
+else
+    CMAKE_CUDA_FLAG="-DCHESSHACKS_ENABLE_CUDA=OFF"
+fi
 
 if [[ -z "${PYTHON_BIN:-}" ]]; then
     PYTHON_BIN=$(command -v python3)
@@ -91,7 +99,7 @@ ensure_tool_via_pip "ninja" "ninja" &
 ensure_clang_toolchain &
 wait  # Wait for all background jobs to complete; fails if any job fails
 
-if [[ -d "$SCRIPT_DIR/third_party/libtorch" ]]; then
+if [[ ! -d "$SCRIPT_DIR/third_party/libtorch" ]]; then
     curl -LO https://download.pytorch.org/libtorch/cpu/libtorch-shared-with-deps-2.9.1%2Bcpu.zip
     npm install --silent --prefix "$HOME/.local/extractzip" extract-zip
     node "$HOME/.local/extractzip/node_modules/extract-zip/cli.js" libtorch-shared-with-deps-2.9.1%2Bcpu.zip `pwd`/third_party/
@@ -218,6 +226,7 @@ cmake -S "$SCRIPT_DIR" -B . \
       -DCMAKE_C_COMPILER="$C_COMPILER" \
       -DCMAKE_CXX_COMPILER="$CXX_COMPILER" \
       -DCMAKE_BUILD_TYPE=Release \
+      "$CMAKE_CUDA_FLAG" \
       -DTorch_DIR="$TORCH_CMAKE_DIR" \
       -DPython3_EXECUTABLE="$PYTHON_BIN" \
       -DPython3_ROOT_DIR="$PYTHON_ROOT" \

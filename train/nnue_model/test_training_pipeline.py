@@ -11,7 +11,15 @@ import tempfile
 
 import chess
 import pytest
-import torch
+import train
+
+if not getattr(train, "HAS_TORCH", True):
+    pytest.skip(
+        f"Skipping NNUE training tests: {getattr(train, 'TORCH_IMPORT_ERROR', 'PyTorch missing')}",
+        allow_module_level=True,
+    )
+
+torch = pytest.importorskip("torch", reason="PyTorch is required for NNUE training tests")
 from torch.utils.data import DataLoader
 
 from train.nnue_model.model import ChessNNUEModel, BitboardFeatures

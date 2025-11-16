@@ -16,22 +16,17 @@ if __package__ in (None, ""):
     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     if project_root not in sys.path:
         sys.path.insert(0, project_root)
+    from env_manager import get_env_config
     from native_loader import ensure_c_helpers
 else:
+    from .env_manager import get_env_config
     from .native_loader import ensure_c_helpers
 
 c_helpers = ensure_c_helpers()
+ENV_CONFIG = get_env_config()
 
 
-def _env_int(name: str, default: int) -> int:
-    try:
-        value = int(os.getenv(name, default))
-        return value if value > 0 else default
-    except (TypeError, ValueError):
-        return default
-
-
-DEFAULT_MAX_DEPTH = _env_int("CHESSHACKS_MAX_DEPTH", 5)
+DEFAULT_MAX_DEPTH = ENV_CONFIG.search_depth
 c_helpers.set_max_search_depth(DEFAULT_MAX_DEPTH)
 
 PIECE_SYMBOL_TO_INT = {

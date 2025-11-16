@@ -8,22 +8,19 @@ import time
 import sys
 import os
 
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
 # Add build directory to path
-build_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'build')
+build_dir = os.path.join(PROJECT_ROOT, 'build')
 sys.path.insert(0, build_dir)
 
 import c_helpers
+from src.env_manager import get_env_config  # type: ignore
 
 
-def _env_int(name: str, default: int) -> int:
-    try:
-        value = int(os.getenv(name, default))
-        return value if value > 0 else default
-    except (TypeError, ValueError):
-        return default
-
-
-MAX_DEPTH = _env_int("CHESSHACKS_MAX_DEPTH", 5)
+ENV_CONFIG = get_env_config()
+MAX_DEPTH = ENV_CONFIG.search_depth
 c_helpers.set_max_search_depth(MAX_DEPTH)
 
 def benchmark_search(fen, depth, num_threads, name):
@@ -111,7 +108,7 @@ def main():
         ("Tactical position", "r2qkb1r/ppp2ppp/2n5/3np1B1/2BPP1b1/2P2N2/PP3PPP/RN1Q1RK1 w kq - 0 9"),
     ]
     
-    depth_candidates = [4, 5, 6]
+    depth_candidates = [4, 5, 6, 7, 8]
     depths = [d for d in depth_candidates if d <= MAX_DEPTH]
     if not depths:
         depths = [MAX_DEPTH]
