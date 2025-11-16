@@ -27,16 +27,55 @@ cd "$SCRIPT_DIR"
 PYTHON_BIN=$(command -v python3)
 PYTHON_ROOT=$(python3 -c "import sys, pathlib; print(pathlib.Path(sys.executable).parent.parent)")
 PYTHON_INCLUDE=$(python3 -c "import sysconfig; print(sysconfig.get_path('include'))")
-PYTHON_LIBRARY=$(python3 -c "import sysconfig, pathlib; libdir = pathlib.Path(sysconfig.get_config_var('LIBDIR')); libname = 'libpython' + sysconfig.get_config_var('LDVERSION') + '.so'; print(libdir / libname)")
+
+# Find Python library - handle both .so (Linux) and .dylib (macOS)
+PYTHON_LIBRARY=$(python3 -c "
+import sysconfig
+import pathlib
+import os
+
+libdir = pathlib.Path(sysconfig.get_config_var('LIBDIR'))
+ldversion = sysconfig.get_config_var('LDVERSION')
+
+# Try .dylib first (macOS), then .so (Linux)
+for ext in ['.dylib', '.so']:
+    libname = f'libpython{ldversion}{ext}'
+    libpath = libdir / libname
+    if libpath.exists():
+        print(libpath)
+        break
+else:
+    # Fallback: try to find any libpython in the directory
+    if libdir.exists():
+        for f in os.listdir(libdir):
+            if f.startswith('libpython') and (f.endswith('.dylib') or f.endswith('.so')):
+                print(libdir / f)
+                break
+")
 echo "Using Python interpreter: $PYTHON_BIN"
 echo ""
 
 echo "Installing Python dependencies from requirements.txt..."
-if ! python3 -m pip install -r "$SCRIPT_DIR/requirements.txt"; then
-    echo "ERROR: Failed to install requirements"
-    exit 1
+# Check if we need --break-system-packages flag (Python 3.11+ with PEP 668)
+PIP_FLAGS=""
+if python3 -c "import sys; exit(0 if sys.version_info >= (3, 11) else 1)" 2>/dev/null; then
+    # Try to install without flag first, but use flag if needed
+    if ! python3 -m pip install -r "$SCRIPT_DIR/requirements.txt" 2>&1 | grep -q "externally-managed-environment"; then
+        PIP_FLAGS=""
+    else
+        PIP_FLAGS="--break-system-packages"
+        echo "Note: Using --break-system-packages flag for Python 3.11+"
+    fi
 fi
-echo "✓ Requirements installed"
+
+# Try installation (skip if packages already installed)
+if ! python3 -m pip install $PIP_FLAGS -r "$SCRIPT_DIR/requirements.txt" 2>&1 | grep -q "Requirement already satisfied"; then
+    if ! python3 -m pip install $PIP_FLAGS -r "$SCRIPT_DIR/requirements.txt"; then
+        echo "WARNING: Some requirements may have failed to install, but continuing..."
+        echo "If build fails, run: pip install -r requirements.txt --break-system-packages"
+    fi
+fi
+echo "✓ Requirements check complete"
 echo ""
 
 if [[ "${1:-}" == "clean" ]]; then

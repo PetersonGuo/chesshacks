@@ -32,10 +32,20 @@ async def get_move(request: Request):
 
     chess_manager.set_context(pgn, timeleft)
     print("pgn", pgn)
+    print(f"[SERVE] About to call chess_manager.get_model_move()...")
+    
+    # Check if entrypoint is registered
+    if chess_manager._func is None:
+        print("[SERVE] ERROR: No entrypoint registered!")
+        return JSONResponse(content={"error": "No entrypoint registered"}, status_code=500)
+    else:
+        print(f"[SERVE] Entrypoint is registered: {chess_manager._func}")
 
     try:
         start_time = time.perf_counter()
+        print(f"[SERVE] Calling get_model_move() now...")
         move, move_probs, logs = chess_manager.get_model_move()
+        print(f"[SERVE] get_model_move() returned successfully")
         end_time = time.perf_counter()
         time_taken = (end_time - start_time) * 1000
     except Exception as e:

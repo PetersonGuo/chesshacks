@@ -35,13 +35,40 @@ class ChessManager:
         The function will be passed the game context and is expected to return a Move object.
         """
         def wrapper(ctx: GameContext):
+            # Debug: Get original stderr before any potential redirects
+            import sys
+            original_stderr = sys.__stderr__ if hasattr(sys, '__stderr__') else sys.stderr
+            
+            original_stderr.write(f"[WRAPPER] wrapper() called with context\n")
+            original_stderr.write(f"[WRAPPER] Context FEN: {ctx.board.fen()}\n")
+            original_stderr.write(f"[WRAPPER] About to call func: {func}\n")
+            original_stderr.flush()
+            
             # Forward the provided context to the model function
-            return func(ctx)
+            try:
+                original_stderr.write(f"[WRAPPER] Calling func(ctx) now...\n")
+                original_stderr.flush()
+                result = func(ctx)
+                original_stderr.write(f"[WRAPPER] func returned: {result}\n")
+                original_stderr.flush()
+            except Exception as e:
+                original_stderr.write(f"[WRAPPER] Exception in func: {type(e).__name__}: {e}\n")
+                import traceback
+                original_stderr.write(f"[WRAPPER] Traceback:\n{traceback.format_exc()}\n")
+                original_stderr.flush()
+                raise
+            
+            return result
 
         if (self._func is not None):
             raise ValueError("Entrypoint cannot be set twice")
 
         self._func = wrapper
+        
+        # Debug
+        import sys
+        sys.stderr.write(f"[ENTRYPOINT] Registered entrypoint wrapper for function: {func}\n")
+        sys.stderr.flush()
 
         return wrapper
 
@@ -102,19 +129,51 @@ class ChessManager:
         if (self._func is None):
             raise ValueError("No entrypoint set")
 
+        # Debug: Write to actual stderr before redirecting
+        import sys
+        sys.stderr.write(f"[CHESS_MANAGER] get_model_move() called, about to invoke entrypoint\n")
+        sys.stderr.write(f"[CHESS_MANAGER] Entrypoint function: {self._func}\n")
+        sys.stderr.write(f"[CHESS_MANAGER] Context board FEN: {self._ctx.board.fen()}\n")
+        sys.stderr.flush()
+
         buffer = io.StringIO()
         try:
+            sys.stderr.write(f"[CHESS_MANAGER] About to redirect stdout/stderr and call entrypoint...\n")
+            sys.stderr.flush()
+            
+            # Note: stderr writes INSIDE the redirect context will be captured
+            # So we write to the original stderr before entering
+            original_stderr = sys.stderr
+            sys.stderr.write(f"[CHESS_MANAGER] About to enter redirect context...\n")
+            sys.stderr.flush()
+            
             with contextlib.redirect_stdout(buffer), contextlib.redirect_stderr(buffer):
+                # These writes will be captured, but we can still use original_stderr
+                original_stderr.write(f"[CHESS_MANAGER] Inside redirect context, calling self._func(self._ctx)...\n")
+                original_stderr.flush()
                 result = self._func(self._ctx)
-        except Exception:
+                original_stderr.write(f"[CHESS_MANAGER] Entrypoint returned: {result}\n")
+                original_stderr.flush()
+        except Exception as e:
+            sys.stderr.write(f"[CHESS_MANAGER] Exception in entrypoint: {type(e).__name__}: {e}\n")
+            sys.stderr.flush()
+            import traceback
+            sys.stderr.write(f"[CHESS_MANAGER] Traceback:\n{traceback.format_exc()}\n")
+            sys.stderr.flush()
             captured_output = buffer.getvalue()
             if captured_output:
                 self._logger.info("Model stdout/stderr:\n%s", captured_output)
             raise
 
+        sys.stderr.write(f"[CHESS_MANAGER] Entrypoint completed successfully\n")
+        sys.stderr.flush()
+        
         captured_output = buffer.getvalue()
         if captured_output:
             self._logger.info("Model stdout/stderr:\n%s", captured_output)
+            sys.stderr.write(f"[CHESS_MANAGER] Captured output length: {len(captured_output)} chars\n")
+            sys.stderr.write(f"[CHESS_MANAGER] First 500 chars of captured output:\n{captured_output[:500]}\n")
+            sys.stderr.flush()
 
         return result, self._move_probabilities, captured_output
 

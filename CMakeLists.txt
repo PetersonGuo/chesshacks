@@ -66,13 +66,13 @@ set(SOURCE_FILES
     src/evaluation.cpp
     src/opening_book.cpp
     src/search_and_utils.cpp
+    src/cuda/cuda_utils.cpp  # Always compile (has fallback when CUDA_ENABLED is not defined)
 )
 
 # Add CUDA files if CUDA is enabled
 if(CUDA_ENABLED)
     list(APPEND SOURCE_FILES 
         src/cuda/cuda_eval.cu
-        src/cuda/cuda_utils.cpp
     )
     
     # Create the extension module with CUDA support

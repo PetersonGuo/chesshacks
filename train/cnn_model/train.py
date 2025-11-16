@@ -461,6 +461,8 @@ def save_checkpoint(
     scheduler = None,
     best_val_loss: Optional[float] = None,
     training_start_time: Optional[str] = None,
+    eval_mean: Optional[float] = None,
+    eval_std: Optional[float] = None,
 ) -> None:
     """
     Save model checkpoint
@@ -478,6 +480,8 @@ def save_checkpoint(
         scheduler: Optional scheduler whose state should be checkpointed
         best_val_loss: Best validation loss observed so far
         training_start_time: ISO format timestamp when training started
+        eval_mean: Mean of training evaluations (for denormalization)
+        eval_std: Std of training evaluations (for denormalization)
     """
     checkpoint = {
         'epoch': epoch,
@@ -493,6 +497,10 @@ def save_checkpoint(
         checkpoint['best_val_loss'] = best_val_loss
     if training_start_time is not None:
         checkpoint['training_start_time'] = training_start_time
+    if eval_mean is not None:
+        checkpoint['eval_mean'] = eval_mean
+    if eval_std is not None:
+        checkpoint['eval_std'] = eval_std
 
     filepath = os.path.join(config.checkpoint_dir, filename)
     torch.save(checkpoint, filepath)
@@ -693,6 +701,15 @@ def train(config: TrainingConfig) -> Tuple[torch.nn.Module, Dict[str, list]]:
     if val_loader:
         print(f"Validation batches: {len(val_loader)}")
 
+    # Get normalization stats from training dataset to save in checkpoint
+    # These are needed for correct denormalization during inference
+    dataset_eval_mean = train_loader.dataset.eval_mean
+    dataset_eval_std = train_loader.dataset.eval_std
+    print(f"Normalization stats from training data:")
+    print(f"  Mean: {dataset_eval_mean:.2f} cp")
+    print(f"  Std:  {dataset_eval_std:.2f} cp")
+    print(f"These will be saved in checkpoints for correct inference denormalization")
+
     # Create CNN model
     print("\nCreating CNN model...")
     model = ChessCNNModel(
@@ -834,6 +851,7 @@ def train(config: TrainingConfig) -> Tuple[torch.nn.Module, Dict[str, list]]:
                 config, 'best_model.pt', upload_to_hf=False,
                 upload_threads=upload_threads, scheduler=scheduler,
                 best_val_loss=best_val_loss, training_start_time=training_start_time,
+                eval_mean=dataset_eval_mean, eval_std=dataset_eval_std,
             )
 
         # Save regular checkpoint
@@ -845,6 +863,7 @@ def train(config: TrainingConfig) -> Tuple[torch.nn.Module, Dict[str, list]]:
                 upload_to_hf=config.hf_auto_upload, upload_threads=upload_threads,
                 scheduler=scheduler, best_val_loss=best_val_loss,
                 training_start_time=training_start_time,
+                eval_mean=dataset_eval_mean, eval_std=dataset_eval_std,
             )
 
         # Update learning rate
@@ -877,6 +896,7 @@ def train(config: TrainingConfig) -> Tuple[torch.nn.Module, Dict[str, list]]:
                 config, 'best_model.pt', upload_to_hf=False,
                 upload_threads=upload_threads, scheduler=scheduler,
                 best_val_loss=best_val_loss, training_start_time=training_start_time,
+                eval_mean=dataset_eval_mean, eval_std=dataset_eval_std,
             )
 
         # Upload best model at the end (if enabled in config)
@@ -915,6 +935,7 @@ def train(config: TrainingConfig) -> Tuple[torch.nn.Module, Dict[str, list]]:
             upload_to_hf=False, upload_threads=upload_threads,
             scheduler=scheduler, best_val_loss=best_val_loss,
             training_start_time=training_start_time,
+            eval_mean=dataset_eval_mean, eval_std=dataset_eval_std,
         )
 
         # Save final model snapshot
@@ -923,6 +944,7 @@ def train(config: TrainingConfig) -> Tuple[torch.nn.Module, Dict[str, list]]:
             config, 'final_model.pt', upload_to_hf=False,
             upload_threads=upload_threads, scheduler=scheduler,
             best_val_loss=best_val_loss, training_start_time=training_start_time,
+            eval_mean=dataset_eval_mean, eval_std=dataset_eval_std,
         )
 
     print("\nTraining complete!")
