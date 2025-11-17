@@ -14,3 +14,4 @@ checkpoints
 third_party/libtorch
 .pytest_cache
 .chesshacks_env
+.vscode

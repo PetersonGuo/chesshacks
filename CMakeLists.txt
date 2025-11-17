@@ -7,6 +7,9 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 option(CHESSHACKS_ENABLE_CUDA "Enable CUDA acceleration" OFF)
 option(CHESSHACKS_ENABLE_ROCM "Prefer ROCm-flavoured libtorch download (Linux only)" OFF)
+option(CHESSHACKS_USE_SYSTEM_TORCH
+    "Skip vendored libtorch download and rely on a pre-installed Torch_DIR"
+    OFF)
 
 include(FetchContent)
 
@@ -171,7 +174,6 @@ endfunction()
 function(chesshacks_ensure_libtorch)
     chesshacks_compute_libtorch_download(_libtorch_url _libtorch_variant)
     set(_stage_dir "${CMAKE_BINARY_DIR}/third_party/libtorch")
-    set(_libtorch_root "${_stage_dir}/libtorch")
 
     FetchContent_Declare(
         chesshacks_libtorch
@@ -186,6 +188,11 @@ function(chesshacks_ensure_libtorch)
         FetchContent_Populate(chesshacks_libtorch)
     endif()
 
+    set(_libtorch_root "${_stage_dir}/libtorch")
+    if(NOT EXISTS "${_libtorch_root}")
+        set(_libtorch_root "${_stage_dir}")
+    endif()
+
     if(NOT EXISTS "${_libtorch_root}/include/torch/script.h")
         message(FATAL_ERROR "libtorch download failed: expected headers not found in ${_libtorch_root}")
     endif()
@@ -194,9 +201,36 @@ function(chesshacks_ensure_libtorch)
     set(CHESSHACKS_LIBTORCH_ROOT "${_libtorch_root}" CACHE PATH "Resolved libtorch root directory" FORCE)
 endfunction()
 
-if(NOT Torch_DIR)
+function(chesshacks_clear_cached_torch_vars)
+    foreach(_var
+        Torch_FOUND
+        Torch_VERSION
+        TORCH_LIBRARIES
+        TORCH_LIBRARY
+        TORCH_LIBRARY_TYPE
+        torch_LIBRARY
+        torch_cpu_LIBRARY
+        torch_cuda_LIBRARY
+        c10_LIBRARY
+        c10_cuda_LIBRARY
+        kineto_LIBRARY
+        Caffe2_DIR)
+        if(DEFINED ${_var})
+            unset(${_var} CACHE)
+        endif()
+    endforeach()
+endfunction()
+
+if(CHESSHACKS_USE_SYSTEM_TORCH)
+    if(NOT Torch_DIR)
+        message(FATAL_ERROR
+            "CHESSHACKS_USE_SYSTEM_TORCH=ON requires Torch_DIR to be set.")
+    endif()
+    message(STATUS "Using system-provided libtorch at ${Torch_DIR}")
+else()
     chesshacks_ensure_libtorch()
 endif()
+chesshacks_clear_cached_torch_vars()
 find_package(Torch REQUIRED)
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${TORCH_CXX_FLAGS}")
 

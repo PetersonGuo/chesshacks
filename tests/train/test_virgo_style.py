@@ -2,27 +2,13 @@
 Test Virgo-style bitboard implementation
 Verifies compatibility with the Virgo chess engine bitboard format
 """
-import os
-import sys
 
 import pytest
-import train
-
-if not getattr(train, "HAS_TORCH", True):
-    pytest.skip(
-        f"Skipping NNUE training tests: {getattr(train, 'TORCH_IMPORT_ERROR', 'PyTorch missing')}",
-        allow_module_level=True,
-    )
 
 torch = pytest.importorskip("torch", reason="PyTorch is required for NNUE training tests")
 import chess
 
-try:
-    from .model import ChessNNUEModel, BitboardFeatures
-except ImportError:
-    # Allow running as a standalone script (python train/nnue_model/test_virgo_style.py)
-    sys.path.insert(0, os.path.dirname(__file__))
-from model import ChessNNUEModel, BitboardFeatures
+from train.nnue_model.model import ChessNNUEModel, BitboardFeatures
 
 
 def test_virgo_structure():

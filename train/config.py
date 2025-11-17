@@ -2,19 +2,17 @@
 Configuration for NNUE training
 """
 
-import os
 import copy
+import os
 from dataclasses import dataclass
 from typing import Optional
 
-# Check device availability once at module level
-try:
-    import torch
-    _cuda_available = torch.cuda.is_available()
-    _mps_available = torch.backends.mps.is_available() if hasattr(torch.backends, 'mps') else False
-except ImportError:
-    _cuda_available = False
-    _mps_available = False
+import torch
+
+_cuda_available = torch.cuda.is_available()
+_mps_available = (
+    torch.backends.mps.is_available() if hasattr(torch.backends, "mps") else False
+)
 
 # Track if warnings have been printed
 _device_warning_printed = False

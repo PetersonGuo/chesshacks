@@ -3,31 +3,21 @@ Main training script for NNUE chess evaluation model
 """
 
 import os
-import sys
 import random
+import threading
+from typing import Dict, List, Optional, Tuple
+
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from tqdm import tqdm
-import threading
-from typing import List, Optional, Tuple, Dict
 
-# Handle both direct execution and package import
-try:
-    from .model import NNUEModel, count_parameters
-    from .dataset import create_dataloaders, split_dataset
-    from .config import get_config, TrainingConfig
-    from .download_data import download_and_process_lichess_data
-    from .upload_to_hf import upload_model_to_hf
-except ImportError:
-    # Add parent directory to path for direct execution
-    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from train.model import NNUEModel, count_parameters
-    from train.dataset import create_dataloaders, split_dataset
-    from train.config import get_config, TrainingConfig
-    from train.download_data import download_and_process_lichess_data
-    from train.upload_to_hf import upload_model_to_hf
+from .config import TrainingConfig, get_config
+from .dataset import create_dataloaders, split_dataset
+from .download_data import download_and_process_lichess_data
+from .model import NNUEModel, count_parameters
+from .upload_to_hf import upload_model_to_hf
 
 
 class WarmupScheduler:
@@ -36,12 +26,15 @@ class WarmupScheduler:
     During warmup epochs, linearly increases learning rate from warmup_start_lr to target_lr.
     After warmup, delegates to the wrapped scheduler.
     """
-    def __init__(self, 
-                 optimizer: torch.optim.Optimizer,
-                 base_scheduler: Optional[torch.optim.lr_scheduler.LRScheduler],
-                 warmup_epochs: int,
-                 target_lr: float,
-                 warmup_start_lr: Optional[float] = None):
+
+    def __init__(
+        self,
+        optimizer: torch.optim.Optimizer,
+        base_scheduler: Optional[torch.optim.lr_scheduler.LRScheduler],
+        warmup_epochs: int,
+        target_lr: float,
+        warmup_start_lr: Optional[float] = None,
+    ):
         """
         Args:
             optimizer: The optimizer whose learning rate will be scheduled
@@ -56,52 +49,56 @@ class WarmupScheduler:
         self.target_lr = target_lr
         self.warmup_start_lr = warmup_start_lr if warmup_start_lr is not None else 0.0
         self.current_epoch = -1  # Start at -1 so first step() sets LR for epoch 0
-        
+
         # Initialize learning rate - will be set properly on first step()
         if warmup_epochs > 0:
             for param_group in self.optimizer.param_groups:
-                param_group['lr'] = self.warmup_start_lr
-        
+                param_group["lr"] = self.warmup_start_lr
+
     def step(self):
         """Update learning rate for next epoch"""
         self.current_epoch += 1
-        
+
         if self.current_epoch < self.warmup_epochs:
             # Warmup phase: linear interpolation from warmup_start_lr to target_lr
             # Epoch 0: 1/warmup_epochs, Epoch 1: 2/warmup_epochs, ..., Epoch (warmup_epochs-1): warmup_epochs/warmup_epochs = target_lr
-            lr = self.warmup_start_lr + (self.target_lr - self.warmup_start_lr) * \
-                 (self.current_epoch + 1) / self.warmup_epochs
+            lr = (
+                self.warmup_start_lr
+                + (self.target_lr - self.warmup_start_lr)
+                * (self.current_epoch + 1)
+                / self.warmup_epochs
+            )
             for param_group in self.optimizer.param_groups:
-                param_group['lr'] = lr
+                param_group["lr"] = lr
         else:
             # After warmup: use base scheduler if available
             if self.base_scheduler is not None:
                 self.base_scheduler.step()
-    
+
     def get_last_lr(self):
         """Get the last computed learning rate"""
-        return [group['lr'] for group in self.optimizer.param_groups]
-    
+        return [group["lr"] for group in self.optimizer.param_groups]
+
     def state_dict(self):
         """Return state dict for checkpointing"""
         state = {
-            'current_epoch': self.current_epoch,
-            'warmup_epochs': self.warmup_epochs,
-            'target_lr': self.target_lr,
-            'warmup_start_lr': self.warmup_start_lr,
+            "current_epoch": self.current_epoch,
+            "warmup_epochs": self.warmup_epochs,
+            "target_lr": self.target_lr,
+            "warmup_start_lr": self.warmup_start_lr,
         }
         if self.base_scheduler is not None:
-            state['base_scheduler'] = self.base_scheduler.state_dict()
+            state["base_scheduler"] = self.base_scheduler.state_dict()
         return state
-    
+
     def load_state_dict(self, state_dict):
         """Load state dict from checkpoint"""
-        self.current_epoch = state_dict['current_epoch']
-        self.warmup_epochs = state_dict['warmup_epochs']
-        self.target_lr = state_dict['target_lr']
-        self.warmup_start_lr = state_dict['warmup_start_lr']
-        if self.base_scheduler is not None and 'base_scheduler' in state_dict:
-            self.base_scheduler.load_state_dict(state_dict['base_scheduler'])
+        self.current_epoch = state_dict["current_epoch"]
+        self.warmup_epochs = state_dict["warmup_epochs"]
+        self.target_lr = state_dict["target_lr"]
+        self.warmup_start_lr = state_dict["warmup_start_lr"]
+        if self.base_scheduler is not None and "base_scheduler" in state_dict:
+            self.base_scheduler.load_state_dict(state_dict["base_scheduler"])
 
 
 def set_seed(seed: int) -> None:
@@ -113,42 +110,44 @@ def set_seed(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
-def get_optimizer(model: torch.nn.Module, config: TrainingConfig) -> torch.optim.Optimizer:
+def get_optimizer(
+    model: torch.nn.Module, config: TrainingConfig
+) -> torch.optim.Optimizer:
     """Create optimizer based on configuration"""
-    if config.optimizer == 'adam':
+    if config.optimizer == "adam":
         return optim.Adam(
             model.parameters(),
             lr=config.learning_rate,
-            weight_decay=config.weight_decay
+            weight_decay=config.weight_decay,
         )
-    elif config.optimizer == 'sgd':
+    elif config.optimizer == "sgd":
         return optim.SGD(
             model.parameters(),
             lr=config.learning_rate,
             momentum=0.9,  # Standard SGD momentum
-            weight_decay=config.weight_decay
+            weight_decay=config.weight_decay,
         )
     else:
         raise ValueError(f"Unknown optimizer: {config.optimizer}")
 
 
-def get_scheduler(optimizer: torch.optim.Optimizer, 
-                  config: TrainingConfig):
+def get_scheduler(optimizer: torch.optim.Optimizer, config: TrainingConfig):
     """Create learning rate scheduler based on configuration"""
     base_scheduler = None
-    
-    if config.scheduler == 'step':
+
+    if config.scheduler == "step":
         base_scheduler = optim.lr_scheduler.StepLR(
             optimizer,
             step_size=config.scheduler_step_size,
-            gamma=config.scheduler_gamma
+            gamma=config.scheduler_gamma,
         )
-    elif config.scheduler == 'cosine':
+    elif config.scheduler == "cosine":
         base_scheduler = optim.lr_scheduler.CosineAnnealingLR(
             optimizer,
-            T_max=config.num_epochs - config.warmup_epochs  # Adjust T_max to account for warmup
+            T_max=config.num_epochs
+            - config.warmup_epochs,  # Adjust T_max to account for warmup
         )
-    
+
     # Wrap with warmup if enabled
     if config.warmup_epochs > 0:
         return WarmupScheduler(
@@ -156,25 +155,31 @@ def get_scheduler(optimizer: torch.optim.Optimizer,
             base_scheduler=base_scheduler,
             warmup_epochs=config.warmup_epochs,
             target_lr=config.learning_rate,
-            warmup_start_lr=config.warmup_start_lr
+            warmup_start_lr=config.warmup_start_lr,
         )
-    
+
     return base_scheduler
 
 
 def get_loss_function(config: TrainingConfig) -> torch.nn.Module:
     """Get loss function based on configuration"""
-    if config.loss_function == 'mse':
+    if config.loss_function == "mse":
         return nn.MSELoss()
-    elif config.loss_function == 'huber':
+    elif config.loss_function == "huber":
         return nn.HuberLoss()
     else:
         raise ValueError(f"Unknown loss function: {config.loss_function}")
 
 
-def train_epoch(model: torch.nn.Module, train_loader: torch.utils.data.DataLoader,
-                optimizer: torch.optim.Optimizer, criterion: torch.nn.Module,
-                device: torch.device, config: TrainingConfig, epoch: int) -> float:
+def train_epoch(
+    model: torch.nn.Module,
+    train_loader: torch.utils.data.DataLoader,
+    optimizer: torch.optim.Optimizer,
+    criterion: torch.nn.Module,
+    device: torch.device,
+    config: TrainingConfig,
+    epoch: int,
+) -> float:
     """
     Train for one epoch
 
@@ -195,8 +200,11 @@ def train_epoch(model: torch.nn.Module, train_loader: torch.utils.data.DataLoade
     num_batches = len(train_loader)
 
     # Progress bar
-    pbar = tqdm(train_loader, desc=f'Epoch {epoch+1}/{config.num_epochs}',
-                disable=not config.verbose)
+    pbar = tqdm(
+        train_loader,
+        desc=f"Epoch {epoch+1}/{config.num_epochs}",
+        disable=not config.verbose,
+    )
 
     for batch_idx, (white_features, black_features, targets) in enumerate(pbar):
         # Move to device
@@ -228,14 +236,18 @@ def train_epoch(model: torch.nn.Module, train_loader: torch.utils.data.DataLoade
 
         # Update progress bar
         if batch_idx % config.log_every_n_batches == 0:
-            pbar.set_postfix({'loss': f'{loss.item():.4f}'})
+            pbar.set_postfix({"loss": f"{loss.item():.4f}"})
 
     return total_loss / num_batches if num_batches > 0 else 0.0
 
 
-def validate(model: torch.nn.Module, val_loader: torch.utils.data.DataLoader,
-             criterion: torch.nn.Module, device: torch.device, 
-             config: TrainingConfig) -> float:
+def validate(
+    model: torch.nn.Module,
+    val_loader: torch.utils.data.DataLoader,
+    criterion: torch.nn.Module,
+    device: torch.device,
+    config: TrainingConfig,
+) -> float:
     """
     Validate the model
 
@@ -254,7 +266,7 @@ def validate(model: torch.nn.Module, val_loader: torch.utils.data.DataLoader,
     num_batches = len(val_loader)
 
     with torch.no_grad():
-        pbar = tqdm(val_loader, desc='Validating', disable=not config.verbose)
+        pbar = tqdm(val_loader, desc="Validating", disable=not config.verbose)
         for white_features, black_features, targets in pbar:
             # Move to device
             white_features = white_features.to(device)
@@ -268,7 +280,7 @@ def validate(model: torch.nn.Module, val_loader: torch.utils.data.DataLoader,
             loss = criterion(outputs, targets)
             total_loss += loss.item()
 
-            pbar.set_postfix({'val_loss': f'{loss.item():.4f}'})
+            pbar.set_postfix({"val_loss": f"{loss.item():.4f}"})
 
     return total_loss / num_batches if num_batches > 0 else 0.0
 
@@ -283,7 +295,7 @@ def save_checkpoint(
     filename: str,
     upload_to_hf: bool = False,
     upload_threads: Optional[List[threading.Thread]] = None,
-    scheduler = None,  # Can be LRScheduler or WarmupScheduler
+    scheduler=None,  # Can be LRScheduler or WarmupScheduler
     best_val_loss: Optional[float] = None,
     training_start_time: Optional[str] = None,
 ) -> None:
@@ -305,33 +317,40 @@ def save_checkpoint(
         training_start_time: ISO format timestamp when training started
     """
     checkpoint = {
-        'epoch': epoch,
-        'model_state_dict': model.state_dict(),
-        'optimizer_state_dict': optimizer.state_dict(),
-        'train_loss': train_loss,
-        'val_loss': val_loss,
-        'config': config.__dict__,
+        "epoch": epoch,
+        "model_state_dict": model.state_dict(),
+        "optimizer_state_dict": optimizer.state_dict(),
+        "train_loss": train_loss,
+        "val_loss": val_loss,
+        "config": config.__dict__,
     }
     if scheduler is not None:
-        checkpoint['scheduler_state_dict'] = scheduler.state_dict()
+        checkpoint["scheduler_state_dict"] = scheduler.state_dict()
     if best_val_loss is not None:
-        checkpoint['best_val_loss'] = best_val_loss
+        checkpoint["best_val_loss"] = best_val_loss
     if training_start_time is not None:
-        checkpoint['training_start_time'] = training_start_time
+        checkpoint["training_start_time"] = training_start_time
 
     filepath = os.path.join(config.checkpoint_dir, filename)
     torch.save(checkpoint, filepath)
     print(f"Saved checkpoint: {filepath}")
 
+    state_dict_export = os.path.join(
+        config.checkpoint_dir, f"{os.path.splitext(filename)[0]}_state_dict.pt"
+    )
+    torch.save(model.state_dict(), state_dict_export)
+    print(f"Exported state dict for C++ inference: {state_dict_export}")
+
     # Upload to Hugging Face asynchronously if enabled
     if upload_to_hf and config.hf_auto_upload:
+
         def upload_in_background():
             try:
                 print(f"[Background] Uploading {filename} to Hugging Face...")
                 model_config = {
-                    'hidden_size': config.hidden_size,
-                    'hidden2_size': config.hidden2_size,
-                    'hidden3_size': config.hidden3_size,
+                    "hidden_size": config.hidden_size,
+                    "hidden2_size": config.hidden2_size,
+                    "hidden3_size": config.hidden3_size,
                 }
                 upload_model_to_hf(
                     checkpoint_path=filepath,
@@ -341,7 +360,9 @@ def save_checkpoint(
                 )
                 print(f"[Background] Upload of {filename} completed!")
             except Exception as e:
-                print(f"[Background] Warning: Failed to upload {filename} to Hugging Face: {e}")
+                print(
+                    f"[Background] Warning: Failed to upload {filename} to Hugging Face: {e}"
+                )
 
         # Start upload in background thread
         thread = threading.Thread(target=upload_in_background, daemon=False)
@@ -356,7 +377,7 @@ def load_checkpoint(
     optimizer: torch.optim.Optimizer,
     checkpoint_path: str,
     map_location: Optional[torch.device] = None,
-    scheduler = None,  # Can be LRScheduler or WarmupScheduler
+    scheduler=None,  # Can be LRScheduler or WarmupScheduler
 ) -> Tuple[int, float, Optional[str]]:
     """
     Load model checkpoint
@@ -372,22 +393,22 @@ def load_checkpoint(
         Tuple of (start_epoch, best_val_loss, training_start_time)
     """
     checkpoint = torch.load(checkpoint_path, map_location=map_location)
-    model.load_state_dict(checkpoint['model_state_dict'])
-    optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-    if scheduler is not None and checkpoint.get('scheduler_state_dict'):
-        scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+    model.load_state_dict(checkpoint["model_state_dict"])
+    optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+    if scheduler is not None and checkpoint.get("scheduler_state_dict"):
+        scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
 
-    start_epoch = checkpoint['epoch'] + 1
-    stored_val_loss = checkpoint.get('val_loss')
-    best_val_loss = checkpoint.get('best_val_loss', float('inf'))
-    training_start_time = checkpoint.get('training_start_time')
+    start_epoch = checkpoint["epoch"] + 1
+    stored_val_loss = checkpoint.get("val_loss")
+    best_val_loss = checkpoint.get("best_val_loss", float("inf"))
+    training_start_time = checkpoint.get("training_start_time")
 
     print(f"Loaded checkpoint from epoch {checkpoint['epoch']}")
     print(f"Training loss: {checkpoint['train_loss']:.4f}")
     if stored_val_loss is not None:
         print(f"Validation loss: {stored_val_loss:.4f}")
 
-    if best_val_loss != float('inf'):
+    if best_val_loss != float("inf"):
         print(f"Best validation loss so far: {best_val_loss:.4f}")
 
     return start_epoch, best_val_loss, training_start_time
@@ -396,23 +417,23 @@ def load_checkpoint(
 def ensure_data_exists(config: TrainingConfig) -> bool:
     """
     Ensure training and validation data files exist, downloading if needed
-    
+
     Args:
         config: Training configuration
-    
+
     Returns:
         True if data exists or was successfully downloaded, False otherwise
     """
     train_exists = os.path.exists(config.train_data_path)
     val_exists = config.val_data_path and os.path.exists(config.val_data_path)
-    
+
     if train_exists and (not config.val_data_path or val_exists):
         print(f"Data files found:")
         print(f"  Train: {config.train_data_path}")
         if config.val_data_path:
             print(f"  Val:   {config.val_data_path}")
         return True
-    
+
     if not config.auto_download:
         print(f"Data files not found:")
         if not train_exists:
@@ -421,43 +442,43 @@ def ensure_data_exists(config: TrainingConfig) -> bool:
             print(f"  Missing: {config.val_data_path}")
         print("Set config.auto_download = True to automatically download data")
         return False
-    
+
     print("Data files not found. Downloading and processing...")
-    
+
     output_dir = os.path.dirname(config.train_data_path) or config.download_output_dir
-    
+
     download_kwargs = {
-        'output_dir': output_dir,
-        'year': config.download_year,
-        'month': config.download_month,
-        'rated_only': config.download_rated_only,
-        'stockfish_path': config.stockfish_path,
-        'depth': config.download_depth,
-        'max_games': config.download_max_games,
-        'positions_per_game': config.download_positions_per_game,
-        'max_positions': None,
-        'num_workers': config.download_num_workers,
-        'batch_size': config.download_batch_size,
-        'download_mode': config.download_mode,
-        'skip_redownload': config.download_skip_redownload,
+        "output_dir": output_dir,
+        "year": config.download_year,
+        "month": config.download_month,
+        "rated_only": config.download_rated_only,
+        "stockfish_path": config.stockfish_path,
+        "depth": config.download_depth,
+        "max_games": config.download_max_games,
+        "positions_per_game": config.download_positions_per_game,
+        "max_positions": None,
+        "num_workers": config.download_num_workers,
+        "batch_size": config.download_batch_size,
+        "download_mode": config.download_mode,
+        "skip_redownload": config.download_skip_redownload,
     }
-    
+
     try:
         output_path = download_and_process_lichess_data(**download_kwargs)
-        
+
         if not output_path:
             print("Failed to download data")
             return False
-        
+
         os.makedirs(output_dir, exist_ok=True)
-        
+
         if not train_exists:
             if config.val_data_path:
                 train_path, val_path = split_dataset(
-                    output_path, 
-                    train_ratio=config.train_val_split_ratio, 
+                    output_path,
+                    train_ratio=config.train_val_split_ratio,
                     output_dir=output_dir,
-                    config=config
+                    config=config,
                 )
                 config.train_data_path = train_path
                 config.val_data_path = val_path
@@ -468,17 +489,17 @@ def ensure_data_exists(config: TrainingConfig) -> bool:
                 config.train_data_path,
                 train_ratio=config.train_val_split_ratio,
                 output_dir=output_dir,
-                config=config
+                config=config,
             )
             config.train_data_path = train_path
             config.val_data_path = val_path
-        
+
         print(f"Data ready:")
         print(f"  Train: {config.train_data_path}")
         if config.val_data_path:
             print(f"  Val:   {config.val_data_path}")
         return True
-    
+
     except Exception as e:
         print(f"Error downloading data: {e}")
         return False
@@ -490,13 +511,13 @@ def train(config: TrainingConfig) -> Tuple[torch.nn.Module, Dict[str, list]]:
 
     Args:
         config: Training configuration
-    
+
     Returns:
         Tuple of (model, training_history)
     """
     if not ensure_data_exists(config):
         raise FileNotFoundError("Training data not found and could not be downloaded")
-    
+
     set_seed(config.seed)
 
     device = torch.device(config.device)
@@ -509,7 +530,7 @@ def train(config: TrainingConfig) -> Tuple[torch.nn.Module, Dict[str, list]]:
         batch_size=config.batch_size,
         num_workers=config.num_workers,
         max_train_positions=config.max_train_positions,
-        max_val_positions=config.max_val_positions
+        max_val_positions=config.max_val_positions,
     )
 
     print(f"Training batches: {len(train_loader)}")
@@ -521,7 +542,7 @@ def train(config: TrainingConfig) -> Tuple[torch.nn.Module, Dict[str, list]]:
     model = NNUEModel(
         hidden_size=config.hidden_size,
         hidden2_size=config.hidden2_size,
-        hidden3_size=config.hidden3_size
+        hidden3_size=config.hidden3_size,
     )
     model = model.to(device)
 
@@ -535,7 +556,7 @@ def train(config: TrainingConfig) -> Tuple[torch.nn.Module, Dict[str, list]]:
     criterion = get_loss_function(config)
 
     start_epoch = 0
-    best_val_loss = float('inf')
+    best_val_loss = float("inf")
     training_start_time = None
 
     if config.resume_from:
@@ -549,34 +570,35 @@ def train(config: TrainingConfig) -> Tuple[torch.nn.Module, Dict[str, list]]:
         # Sync scheduler with start_epoch (scheduler was saved before step(), so we need to catch up)
         if scheduler is not None:
             # Step scheduler to match start_epoch (scheduler tracks last completed epoch)
-            while (hasattr(scheduler, 'current_epoch') and 
-                   scheduler.current_epoch < start_epoch - 1):
+            while (
+                hasattr(scheduler, "current_epoch")
+                and scheduler.current_epoch < start_epoch - 1
+            ):
                 scheduler.step()
 
     # Training loop
     print(f"\nStarting training for {config.num_epochs} epochs...")
     if config.warmup_epochs > 0:
-        print(f"Warmup: {config.warmup_epochs} epochs (LR: {config.warmup_start_lr or 0.0} -> {config.learning_rate})")
+        print(
+            f"Warmup: {config.warmup_epochs} epochs (LR: {config.warmup_start_lr or 0.0} -> {config.learning_rate})"
+        )
     print("=" * 80)
 
     # Track training start time if not resuming from checkpoint
     from datetime import datetime
+
     if training_start_time is None:
         training_start_time = datetime.now().isoformat()
 
-    training_history = {
-        'train_loss': [],
-        'val_loss': [],
-        'learning_rate': []
-    }
-    
+    training_history = {"train_loss": [], "val_loss": [], "learning_rate": []}
+
     # Track upload threads for cleanup
     upload_threads: List[threading.Thread] = []
     has_validation = val_loader is not None
 
     last_val_loss: Optional[float] = None
     last_train_loss: Optional[float] = None
-    
+
     # Early stopping tracking
     epochs_without_improvement = 0
 
@@ -589,26 +611,28 @@ def train(config: TrainingConfig) -> Tuple[torch.nn.Module, Dict[str, list]]:
         train_loss = train_epoch(
             model, train_loader, optimizer, criterion, device, config, epoch
         )
-        training_history['train_loss'].append(train_loss)
+        training_history["train_loss"].append(train_loss)
         last_train_loss = train_loss
 
         # Log current learning rate
-        current_lr = optimizer.param_groups[0]['lr']
-        training_history['learning_rate'].append(current_lr)
-        
+        current_lr = optimizer.param_groups[0]["lr"]
+        training_history["learning_rate"].append(current_lr)
+
         # Show warmup status
         warmup_status = ""
         if config.warmup_epochs > 0 and epoch < config.warmup_epochs:
             warmup_status = f" [Warmup {epoch+1}/{config.warmup_epochs}]"
 
-        print(f"Epoch {epoch+1}/{config.num_epochs} - Train Loss: {train_loss:.4f}, LR: {current_lr:.6f}{warmup_status}")
+        print(
+            f"Epoch {epoch+1}/{config.num_epochs} - Train Loss: {train_loss:.4f}, LR: {current_lr:.6f}{warmup_status}"
+        )
 
         # Validate
         val_loss = None
         improved = False
         if has_validation and (epoch + 1) % config.validate_every_n_epochs == 0:
             val_loss = validate(model, val_loader, criterion, device, config)
-            training_history['val_loss'].append(val_loss)
+            training_history["val_loss"].append(val_loss)
             last_val_loss = val_loss
             print(f"Epoch {epoch+1}/{config.num_epochs} - Val Loss: {val_loss:.4f}")
             if val_loss < best_val_loss:
@@ -617,30 +641,50 @@ def train(config: TrainingConfig) -> Tuple[torch.nn.Module, Dict[str, list]]:
                 epochs_without_improvement = 0
             else:
                 epochs_without_improvement += 1
-            
+
             # Early stopping check
-            if config.early_stopping_patience is not None and epochs_without_improvement >= config.early_stopping_patience:
-                print(f"\nEarly stopping triggered! No improvement for {config.early_stopping_patience} epochs.")
+            if (
+                config.early_stopping_patience is not None
+                and epochs_without_improvement >= config.early_stopping_patience
+            ):
+                print(
+                    f"\nEarly stopping triggered! No improvement for {config.early_stopping_patience} epochs."
+                )
                 print(f"Best validation loss: {best_val_loss:.4f}")
                 break
 
         # Save best checkpoint whenever validation improves (don't upload during training)
         if improved:
             save_checkpoint(
-                model, optimizer, epoch, train_loss, val_loss,
-                config, 'best_model.pt', upload_to_hf=False,
-                upload_threads=upload_threads, scheduler=scheduler,
-                best_val_loss=best_val_loss, training_start_time=training_start_time,
+                model,
+                optimizer,
+                epoch,
+                train_loss,
+                val_loss,
+                config,
+                "best_model.pt",
+                upload_to_hf=False,
+                upload_threads=upload_threads,
+                scheduler=scheduler,
+                best_val_loss=best_val_loss,
+                training_start_time=training_start_time,
             )
 
         # Save regular checkpoint (upload every N epochs)
         save_regular = (epoch + 1) % config.save_every_n_epochs == 0
         if save_regular and (not config.save_best_only or not has_validation):
             save_checkpoint(
-                model, optimizer, epoch, train_loss, val_loss,
-                config, f'checkpoint_epoch_{epoch+1}.pt',
-                upload_to_hf=True, upload_threads=upload_threads,
-                scheduler=scheduler, best_val_loss=best_val_loss,
+                model,
+                optimizer,
+                epoch,
+                train_loss,
+                val_loss,
+                config,
+                f"checkpoint_epoch_{epoch+1}.pt",
+                upload_to_hf=True,
+                upload_threads=upload_threads,
+                scheduler=scheduler,
+                best_val_loss=best_val_loss,
                 training_start_time=training_start_time,
             )
 
@@ -651,7 +695,9 @@ def train(config: TrainingConfig) -> Tuple[torch.nn.Module, Dict[str, list]]:
         print("-" * 80)
 
     if last_train_loss is None:
-        print("\nNo new epochs were run (start_epoch >= num_epochs). Skipping additional checkpointing.")
+        print(
+            "\nNo new epochs were run (start_epoch >= num_epochs). Skipping additional checkpointing."
+        )
         final_val_loss = last_val_loss
     else:
         # Run final validation if we have a val_loader and didn't just validate
@@ -660,7 +706,7 @@ def train(config: TrainingConfig) -> Tuple[torch.nn.Module, Dict[str, list]]:
         if has_validation and (config.num_epochs % config.validate_every_n_epochs != 0):
             print("Running final validation...")
             final_val_loss = validate(model, val_loader, criterion, device, config)
-            training_history['val_loss'].append(final_val_loss)
+            training_history["val_loss"].append(final_val_loss)
             last_val_loss = final_val_loss
             print(f"Final Validation Loss: {final_val_loss:.4f}")
             if final_val_loss < best_val_loss:
@@ -670,23 +716,32 @@ def train(config: TrainingConfig) -> Tuple[torch.nn.Module, Dict[str, list]]:
         # Update best model if final validation improved
         if final_improved:
             save_checkpoint(
-                model, optimizer, config.num_epochs - 1, last_train_loss, final_val_loss,
-                config, 'best_model.pt', upload_to_hf=False,
-                upload_threads=upload_threads, scheduler=scheduler,
-                best_val_loss=best_val_loss, training_start_time=training_start_time,
+                model,
+                optimizer,
+                config.num_epochs - 1,
+                last_train_loss,
+                final_val_loss,
+                config,
+                "best_model.pt",
+                upload_to_hf=False,
+                upload_threads=upload_threads,
+                scheduler=scheduler,
+                best_val_loss=best_val_loss,
+                training_start_time=training_start_time,
             )
 
         # Upload best model at the end (regardless of whether it was just updated)
-        if has_validation and best_val_loss < float('inf'):
-            best_model_path = os.path.join(config.checkpoint_dir, 'best_model.pt')
+        if has_validation and best_val_loss < float("inf"):
+            best_model_path = os.path.join(config.checkpoint_dir, "best_model.pt")
             if os.path.exists(best_model_path):
                 print("\nUploading best model to Hugging Face...")
+
                 def upload_best_model():
                     try:
                         model_config = {
-                            'hidden_size': config.hidden_size,
-                            'hidden2_size': config.hidden2_size,
-                            'hidden3_size': config.hidden3_size,
+                            "hidden_size": config.hidden_size,
+                            "hidden2_size": config.hidden2_size,
+                            "hidden3_size": config.hidden3_size,
                         }
                         upload_model_to_hf(
                             checkpoint_path=best_model_path,
@@ -696,39 +751,60 @@ def train(config: TrainingConfig) -> Tuple[torch.nn.Module, Dict[str, list]]:
                         )
                         print("[Background] Best model upload completed!")
                     except Exception as e:
-                        print(f"[Background] Warning: Failed to upload best model to Hugging Face: {e}")
-                
+                        print(
+                            f"[Background] Warning: Failed to upload best model to Hugging Face: {e}"
+                        )
+
                 thread = threading.Thread(target=upload_best_model, daemon=False)
                 thread.start()
                 upload_threads.append(thread)
-                print("Started background upload for best model (training continues...)")
+                print(
+                    "Started background upload for best model (training continues...)"
+                )
 
         # Ensure last epoch checkpoint is saved (don't upload - only upload every N epochs)
         save_checkpoint(
-            model, optimizer, config.num_epochs - 1, last_train_loss, final_val_loss,
-            config, f'checkpoint_epoch_{config.num_epochs}.pt',
-            upload_to_hf=False, upload_threads=upload_threads,
-            scheduler=scheduler, best_val_loss=best_val_loss,
+            model,
+            optimizer,
+            config.num_epochs - 1,
+            last_train_loss,
+            final_val_loss,
+            config,
+            f"checkpoint_epoch_{config.num_epochs}.pt",
+            upload_to_hf=False,
+            upload_threads=upload_threads,
+            scheduler=scheduler,
+            best_val_loss=best_val_loss,
             training_start_time=training_start_time,
         )
 
         # Save final model snapshot (don't upload - best model already uploaded)
         save_checkpoint(
-            model, optimizer, config.num_epochs - 1, last_train_loss, final_val_loss,
-            config, 'final_model.pt', upload_to_hf=False,
-            upload_threads=upload_threads, scheduler=scheduler,
-            best_val_loss=best_val_loss, training_start_time=training_start_time,
+            model,
+            optimizer,
+            config.num_epochs - 1,
+            last_train_loss,
+            final_val_loss,
+            config,
+            "final_model.pt",
+            upload_to_hf=False,
+            upload_threads=upload_threads,
+            scheduler=scheduler,
+            best_val_loss=best_val_loss,
+            training_start_time=training_start_time,
         )
 
     print("\nTraining complete!")
-    if best_val_loss < float('inf'):
+    if best_val_loss < float("inf"):
         print(f"Best validation loss: {best_val_loss:.4f}")
     else:
         print("Best validation loss: N/A (validation not run)")
 
     # Wait for any background uploads to complete
     if upload_threads:
-        print(f"\nWaiting for {len(upload_threads)} background upload(s) to complete...")
+        print(
+            f"\nWaiting for {len(upload_threads)} background upload(s) to complete..."
+        )
         for thread in upload_threads:
             thread.join()
         print("All uploads completed!")
@@ -738,7 +814,7 @@ def train(config: TrainingConfig) -> Tuple[torch.nn.Module, Dict[str, list]]:
 
 def main():
     """Main entry point"""
-    config = get_config('default')
+    config = get_config("default")
     config.__post_init__()
 
     print("NNUE Training Configuration")
@@ -748,5 +824,5 @@ def main():
     train(config)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

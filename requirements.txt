@@ -19,7 +19,8 @@ nanobind==2.9.2
 pytest==9.0.1
 
 # NNUE Training and CUDA detection dependencies
-torch>=2.0.0
+# Pin torch to match vendored libtorch (CMake downloads 2.3.0)
+torch==2.3.0
 numpy>=1.24.0
 tqdm>=4.65.0
 requests>=2.31.0

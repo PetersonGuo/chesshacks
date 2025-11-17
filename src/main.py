@@ -14,10 +14,10 @@ from typing import Dict, Optional
 import chess
 from chess import Move
 
-import engine
-from env_manager import get_env_config
-from native_loader import ensure_c_helpers
-from utils import GameContext, chess_manager
+from . import engine
+from .env_manager import get_env_config
+from .native_loader import ensure_c_helpers
+from .utils import GameContext, chess_manager
 
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ENV_CONFIG = get_env_config()
@@ -177,6 +177,7 @@ def make_move(ctx: GameContext) -> Dict[Move, float]:
     # Run a single multi-PV search to get both best move and probabilities
     best_move, score_map = _search_with_probabilities(ctx.board, bitboard_state)
 
+    best_move_uci: Optional[str] = None
     if best_move is None:
         try:
             best_move_uci = _search_best_move(bitboard_state)
@@ -191,16 +192,16 @@ def make_move(ctx: GameContext) -> Dict[Move, float]:
                 history_table,
                 counter_move_table,
             )
-    try:
-        best_move = Move.from_uci(best_move_uci)
-    except ValueError:
-        legal_moves = list(ctx.board.generate_legal_moves())
-        if not legal_moves:
-            ctx.logProbabilities({})
-            raise ValueError("No legal moves available")
-        print(f"Warning: Failed to parse UCI move '{best_move_uci}'")
-        best_move = legal_moves[0]
-        best_move_uci = best_move.uci()
+        try:
+            best_move = Move.from_uci(best_move_uci)
+        except ValueError:
+            legal_moves = list(ctx.board.generate_legal_moves())
+            if not legal_moves:
+                ctx.logProbabilities({})
+                raise ValueError("No legal moves available")
+            print(f"Warning: Failed to parse UCI move '{best_move_uci}'")
+            best_move = legal_moves[0]
+            best_move_uci = best_move.uci()
     else:
         best_move_uci = best_move.uci()
 

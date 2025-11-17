@@ -2,24 +2,21 @@
 Module for uploading NNUE model to Hugging Face Hub
 """
 
-import os
-import sys
 import json
-import torch
-from pathlib import Path
+import os
 from datetime import datetime
-from typing import Optional, Dict, Any, Tuple
-from huggingface_hub import HfApi, upload_folder, login, get_token
+from typing import Any, Dict, Optional, Tuple
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.append(str(PROJECT_ROOT))
+import torch
+from huggingface_hub import HfApi, get_token, login, upload_folder
 
 from src.env_manager import get_env_config  # type: ignore
+
 from .config import TrainingConfig, get_config
 from .model import HalfKP
 
 ENV_CONFIG = get_env_config()
+
 
 def create_model_card(
     model_name: str,
@@ -42,18 +39,22 @@ def create_model_card(
     current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     # Extract checkpoint info
-    epoch = checkpoint_info.get('epoch', 'N/A') if checkpoint_info else 'N/A'
-    train_loss = checkpoint_info.get('train_loss', 'N/A') if checkpoint_info else 'N/A'
-    val_loss = checkpoint_info.get('val_loss', 'N/A') if checkpoint_info else 'N/A'
+    epoch = checkpoint_info.get("epoch", "N/A") if checkpoint_info else "N/A"
+    train_loss = checkpoint_info.get("train_loss", "N/A") if checkpoint_info else "N/A"
+    val_loss = checkpoint_info.get("val_loss", "N/A") if checkpoint_info else "N/A"
 
     # Extract model architecture from training config
-    hidden_size = training_config.get('hidden_size', 256) if training_config else 256
-    hidden2_size = training_config.get('hidden2_size', 32) if training_config else 32
-    hidden3_size = training_config.get('hidden3_size', 32) if training_config else 32
+    hidden_size = training_config.get("hidden_size", 256) if training_config else 256
+    hidden2_size = training_config.get("hidden2_size", 32) if training_config else 32
+    hidden3_size = training_config.get("hidden3_size", 32) if training_config else 32
 
     # Format losses
-    train_loss_str = f"{train_loss:.4f}" if isinstance(train_loss, (int, float)) else str(train_loss)
-    val_loss_str = f"{val_loss:.4f}" if isinstance(val_loss, (int, float)) else str(val_loss)
+    train_loss_str = (
+        f"{train_loss:.4f}" if isinstance(train_loss, (int, float)) else str(train_loss)
+    )
+    val_loss_str = (
+        f"{val_loss:.4f}" if isinstance(val_loss, (int, float)) else str(val_loss)
+    )
 
     card = f"""# {model_name}
 
@@ -135,8 +136,14 @@ def _format_training_config(config: Dict[str, Any]) -> str:
     # Filter out None values and format nicely
     formatted = []
     key_params = [
-        'batch_size', 'learning_rate', 'num_epochs', 'optimizer',
-        'loss_function', 'hidden_size', 'hidden2_size', 'hidden3_size'
+        "batch_size",
+        "learning_rate",
+        "num_epochs",
+        "optimizer",
+        "loss_function",
+        "hidden_size",
+        "hidden2_size",
+        "hidden3_size",
     ]
 
     for key in key_params:
@@ -150,20 +157,20 @@ def _format_training_config(config: Dict[str, Any]) -> str:
 def load_checkpoint_info(checkpoint_path: str) -> Dict[str, Any]:
     """
     Load checkpoint information without loading the full model
-    
+
     Args:
         checkpoint_path: Path to checkpoint file
-    
+
     Returns:
         Dictionary with checkpoint metadata
     """
-    checkpoint = torch.load(checkpoint_path, map_location='cpu')
+    checkpoint = torch.load(checkpoint_path, map_location="cpu")
     return {
-        'epoch': checkpoint.get('epoch', None),
-        'train_loss': checkpoint.get('train_loss', None),
-        'val_loss': checkpoint.get('val_loss', None),
-        'config': checkpoint.get('config', None),
-        'training_start_time': checkpoint.get('training_start_time', None),
+        "epoch": checkpoint.get("epoch", None),
+        "train_loss": checkpoint.get("train_loss", None),
+        "val_loss": checkpoint.get("val_loss", None),
+        "config": checkpoint.get("config", None),
+        "training_start_time": checkpoint.get("training_start_time", None),
     }
 
 
@@ -174,61 +181,64 @@ def prepare_model_for_upload(
 ) -> Tuple[Dict[str, Any], Dict[str, int], Dict[str, Any]]:
     """
     Prepare model files for upload to Hugging Face
-    
+
     Args:
         checkpoint_path: Path to model checkpoint
         output_dir: Directory to save prepared files
         model_config: Model architecture config (hidden_size, hidden2_size, hidden3_size)
-    
+
     Returns:
         Tuple of (checkpoint_info, model_config, training_config)
     """
     os.makedirs(output_dir, exist_ok=True)
-    
+
     # Load checkpoint
-    checkpoint = torch.load(checkpoint_path, map_location='cpu')
-    
+    checkpoint = torch.load(checkpoint_path, map_location="cpu")
+
     # Extract model config from checkpoint if not provided
     if model_config is None:
-        checkpoint_config = checkpoint.get('config', {})
+        checkpoint_config = checkpoint.get("config", {})
         model_config = {
-            'hidden_size': checkpoint_config.get('hidden_size', 256),
-            'hidden2_size': checkpoint_config.get('hidden2_size', 32),
-            'hidden3_size': checkpoint_config.get('hidden3_size', 32),
+            "hidden_size": checkpoint_config.get("hidden_size", 256),
+            "hidden2_size": checkpoint_config.get("hidden2_size", 32),
+            "hidden3_size": checkpoint_config.get("hidden3_size", 32),
         }
-    
+
     # Save model state dict
-    model_state_dict = checkpoint['model_state_dict']
-    torch.save({
-        'model_state_dict': model_state_dict,
-        'model_config': model_config,
-    }, os.path.join(output_dir, 'pytorch_model.bin'))
-    
+    model_state_dict = checkpoint["model_state_dict"]
+    torch.save(
+        {
+            "model_state_dict": model_state_dict,
+            "model_config": model_config,
+        },
+        os.path.join(output_dir, "pytorch_model.bin"),
+    )
+
     # Save model config as JSON
     config_dict = {
-        'model_type': 'nnue',
-        'architecture': {
-            'hidden_size': model_config['hidden_size'],
-            'hidden2_size': model_config['hidden2_size'],
-            'hidden3_size': model_config['hidden3_size'],
-            'feature_size': HalfKP.FEATURE_SIZE,
+        "model_type": "nnue",
+        "architecture": {
+            "hidden_size": model_config["hidden_size"],
+            "hidden2_size": model_config["hidden2_size"],
+            "hidden3_size": model_config["hidden3_size"],
+            "feature_size": HalfKP.FEATURE_SIZE,
         },
-        'training_config': checkpoint.get('config', {}),
+        "training_config": checkpoint.get("config", {}),
     }
-    
-    with open(os.path.join(output_dir, 'config.json'), 'w') as f:
+
+    with open(os.path.join(output_dir, "config.json"), "w") as f:
         json.dump(config_dict, f, indent=2)
-    
+
     # Return checkpoint info
     checkpoint_info = {
-        'epoch': checkpoint.get('epoch', None),
-        'train_loss': checkpoint.get('train_loss', None),
-        'val_loss': checkpoint.get('val_loss', None),
-        'training_start_time': checkpoint.get('training_start_time', None),
+        "epoch": checkpoint.get("epoch", None),
+        "train_loss": checkpoint.get("train_loss", None),
+        "val_loss": checkpoint.get("val_loss", None),
+        "training_start_time": checkpoint.get("training_start_time", None),
     }
-    
-    training_config = checkpoint.get('config', {})
-    
+
+    training_config = checkpoint.get("config", {})
+
     return checkpoint_info, model_config, training_config
 
 
@@ -247,7 +257,7 @@ def upload_model_to_hf(
 ) -> str:
     """
     Upload model to Hugging Face Hub
-    
+
     Args:
         checkpoint_path: Path to model checkpoint file
         repo_id: Hugging Face repository ID (defaults to config.hf_repo_id)
@@ -260,14 +270,14 @@ def upload_model_to_hf(
         checkpoints_dir: Directory containing checkpoints (defaults to config.hf_checkpoints_dir or checkpoint directory)
         config: TrainingConfig instance (if None, uses default config)
         training_start_time: ISO format timestamp when training started (will be extracted from checkpoint if not provided)
-    
+
     Returns:
         URL of the uploaded model
     """
     # Load config if not provided
     if config is None:
-        config = get_config('default')
-    
+        config = get_config("default")
+
     # Use config defaults if parameters not provided
     if repo_id is None:
         repo_id = config.hf_repo_id
@@ -289,36 +299,39 @@ def upload_model_to_hf(
         print("  huggingface-cli auth login")
         print("  or pass token parameter")
         raise ValueError("Hugging Face authentication required")
-    
+
     # Create temporary directory for upload files
-    import tempfile
     import shutil
+    import tempfile
+
     with tempfile.TemporaryDirectory() as temp_dir:
         # Prepare model files
         print(f"Preparing model files from {checkpoint_path}...")
         checkpoint_info, model_config, training_config = prepare_model_for_upload(
             checkpoint_path, temp_dir, model_config
         )
-        
+
         # Use provided training_start_time if available, otherwise try to get from checkpoint
         if training_start_time is None:
-            training_start_time = checkpoint_info.get('training_start_time')
-        
+            training_start_time = checkpoint_info.get("training_start_time")
+
         # Copy checkpoint file(s) to upload directory
         checkpoint_filename = os.path.basename(checkpoint_path)
         checkpoint_dest = os.path.join(temp_dir, checkpoint_filename)
         shutil.copy2(checkpoint_path, checkpoint_dest)
         print(f"Added checkpoint file: {checkpoint_filename}")
-        
+
         # Optionally upload all checkpoints from the checkpoints directory
         if upload_all_checkpoints:
             if checkpoints_dir is None:
-                checkpoints_dir = os.path.dirname(checkpoint_path) or config.checkpoint_dir
-            
+                checkpoints_dir = (
+                    os.path.dirname(checkpoint_path) or config.checkpoint_dir
+                )
+
             if os.path.isdir(checkpoints_dir):
                 print(f"Uploading all checkpoints from {checkpoints_dir}...")
                 for filename in os.listdir(checkpoints_dir):
-                    if filename.endswith('.pt'):
+                    if filename.endswith(".pt"):
                         src_path = os.path.join(checkpoints_dir, filename)
                         # Skip if already added
                         if filename != checkpoint_filename:
@@ -327,18 +340,18 @@ def upload_model_to_hf(
                             print(f"  Added checkpoint: {filename}")
             else:
                 print(f"Warning: Checkpoints directory not found: {checkpoints_dir}")
-        
+
         # Create model card
         card_content = create_model_card(
-            model_name=model_name or repo_id.split('/')[-1],
+            model_name=model_name or repo_id.split("/")[-1],
             model_description=model_description,
             training_config=training_config,
             checkpoint_info=checkpoint_info,
         )
-        
-        with open(os.path.join(temp_dir, 'README.md'), 'w') as f:
+
+        with open(os.path.join(temp_dir, "README.md"), "w") as f:
             f.write(card_content)
-        
+
         # Check if repository exists, throw error if it doesn't
         api = HfApi()
         try:
@@ -348,23 +361,28 @@ def upload_model_to_hf(
                 f"Repository '{repo_id}' does not exist. Please create it first on Hugging Face Hub.\n"
                 f"Error: {e}"
             )
-        
+
         # Create commit message with epoch and training start time
-        epoch = checkpoint_info.get('epoch', 'N/A')
+        epoch = checkpoint_info.get("epoch", "N/A")
         epoch_display = epoch + 1 if isinstance(epoch, int) else epoch
-        
+
         if training_start_time:
             try:
                 # Parse ISO format and format nicely
                 from datetime import datetime
-                start_dt = datetime.fromisoformat(training_start_time.replace('Z', '+00:00'))
+
+                start_dt = datetime.fromisoformat(
+                    training_start_time.replace("Z", "+00:00")
+                )
                 start_time_str = start_dt.strftime("%Y-%m-%d %H:%M:%S")
             except Exception:
                 start_time_str = training_start_time
-            commit_message = f"Epoch {epoch_display} - Training started: {start_time_str}"
+            commit_message = (
+                f"Epoch {epoch_display} - Training started: {start_time_str}"
+            )
         else:
             commit_message = f"Epoch {epoch_display}"
-        
+
         # Upload files
         print(f"Uploading to {repo_id}...")
         upload_folder(
@@ -373,11 +391,11 @@ def upload_model_to_hf(
             repo_type="model",
             commit_message=commit_message,
         )
-        
+
         model_url = f"https://huggingface.co/{repo_id}"
         print(f"✓ Model uploaded successfully!")
         print(f"  URL: {model_url}")
-        
+
         return model_url
 
 
@@ -388,25 +406,25 @@ def download_model_from_hf(
 ) -> str:
     """
     Download model from Hugging Face Hub
-    
+
     Args:
         repo_id: Hugging Face repository ID
         local_dir: Local directory to save the model
         token: Hugging Face token (optional)
-    
+
     Returns:
         Path to downloaded checkpoint file
     """
     from huggingface_hub import snapshot_download
-    
+
     print(f"Downloading model from {repo_id}...")
     snapshot_download(
         repo_id=repo_id,
         local_dir=local_dir,
         token=token,
     )
-    
-    checkpoint_path = os.path.join(local_dir, 'pytorch_model.bin')
+
+    checkpoint_path = os.path.join(local_dir, "pytorch_model.bin")
     if os.path.exists(checkpoint_path):
         print(f"✓ Model downloaded to {checkpoint_path}")
         return checkpoint_path
@@ -417,88 +435,76 @@ def download_model_from_hf(
 def main():
     """CLI interface for uploading models"""
     import argparse
-    
-    parser = argparse.ArgumentParser(description='Upload NNUE model to Hugging Face')
+
+    parser = argparse.ArgumentParser(description="Upload NNUE model to Hugging Face")
+    parser.add_argument("checkpoint", type=str, help="Path to model checkpoint file")
     parser.add_argument(
-        'checkpoint',
+        "repo_id",
         type=str,
-        help='Path to model checkpoint file'
-    )
-    parser.add_argument(
-        'repo_id',
-        type=str,
-        nargs='?',
+        nargs="?",
         default=None,
-        help='Hugging Face repository ID (defaults to config.hf_repo_id)'
+        help="Hugging Face repository ID (defaults to config.hf_repo_id)",
     )
     parser.add_argument(
-        '--name',
-        type=str,
-        default=None,
-        help='Display name for the model'
+        "--name", type=str, default=None, help="Display name for the model"
     )
     parser.add_argument(
-        '--description',
-        type=str,
-        default=None,
-        help='Model description'
+        "--description", type=str, default=None, help="Model description"
     )
     parser.add_argument(
-        '--private',
-        action='store_true',
-        help='Make the repository private'
+        "--private", action="store_true", help="Make the repository private"
     )
     parser.add_argument(
-        '--token',
+        "--token",
         type=str,
         default=None,
-        help='Hugging Face token (or set HF_TOKEN env var)'
+        help="Hugging Face token (or set HF_TOKEN env var)",
     )
     parser.add_argument(
-        '--hidden-size',
+        "--hidden-size",
         type=int,
         default=None,
-        help='Model hidden size (if not in checkpoint)'
+        help="Model hidden size (if not in checkpoint)",
     )
     parser.add_argument(
-        '--hidden2-size',
+        "--hidden2-size",
         type=int,
         default=None,
-        help='Model hidden2 size (if not in checkpoint)'
+        help="Model hidden2 size (if not in checkpoint)",
     )
     parser.add_argument(
-        '--hidden3-size',
+        "--hidden3-size",
         type=int,
         default=None,
-        help='Model hidden3 size (if not in checkpoint)'
+        help="Model hidden3 size (if not in checkpoint)",
     )
     parser.add_argument(
-        '--upload-all-checkpoints',
-        action='store_true',
-        help='Upload all checkpoint files from the checkpoints directory'
+        "--upload-all-checkpoints",
+        action="store_true",
+        help="Upload all checkpoint files from the checkpoints directory",
     )
     parser.add_argument(
-        '--checkpoints-dir',
+        "--checkpoints-dir",
         type=str,
         default=None,
-        help='Directory containing checkpoints (defaults to directory of checkpoint file)'
+        help="Directory containing checkpoints (defaults to directory of checkpoint file)",
     )
-    
+
     args = parser.parse_args()
-    
+
     # Load config
-    config = get_config('default')
-    
+    config = get_config("default")
+
     model_config = None
     if args.hidden_size or args.hidden2_size or args.hidden3_size:
         model_config = {
-            'hidden_size': args.hidden_size or 256,
-            'hidden2_size': args.hidden2_size or 32,
-            'hidden3_size': args.hidden3_size or 32,
+            "hidden_size": args.hidden_size or 256,
+            "hidden2_size": args.hidden2_size or 32,
+            "hidden3_size": args.hidden3_size or 32,
         }
-    
+
     token = args.token or ENV_CONFIG.hf_token
-    
+
     upload_model_to_hf(
         checkpoint_path=args.checkpoint,
         repo_id=args.repo_id,
@@ -507,11 +513,13 @@ def main():
         private=args.private if args.private else None,
         token=token,
         model_config=model_config,
-        upload_all_checkpoints=args.upload_all_checkpoints if args.upload_all_checkpoints else None,
+        upload_all_checkpoints=(
+            args.upload_all_checkpoints if args.upload_all_checkpoints else None
+        ),
         checkpoints_dir=args.checkpoints_dir,
         config=config,
     )
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

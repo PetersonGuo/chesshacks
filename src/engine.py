@@ -10,8 +10,8 @@ import time
 
 import chess
 
-from env_manager import get_env_config
-from native_loader import ensure_c_helpers
+from .env_manager import get_env_config
+from .native_loader import ensure_c_helpers
 
 c_helpers = ensure_c_helpers()
 ENV_CONFIG = get_env_config()
