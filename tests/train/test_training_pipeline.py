@@ -136,7 +136,8 @@ def test_model_training(temp_file):
 
     # Create model
     model = ChessNNUEModel()
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    # Force CPU to avoid environment-specific CUDA incompatibilities.
+    device = torch.device("cpu")
     model = model.to(device)
 
     print(f"\nDevice: {device}")
@@ -156,7 +157,7 @@ def test_model_training(temp_file):
         shuffle=True,
         num_workers=0,
         collate_fn=collate_fn_bitmap,
-        pin_memory=True if device.type == 'cuda' else False
+        pin_memory=False,
     )
 
     # Setup training

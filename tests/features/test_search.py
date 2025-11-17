@@ -65,10 +65,10 @@ def test_parallel_alpha_beta_matches_serial(make_state):
     alpha = c_helpers.MIN
     beta = c_helpers.MAX
     seq_score = c_helpers.alpha_beta(
-        make_state(MIDGAME_FEN), 5, alpha, beta, True, c_helpers.evaluate, num_threads=1
+        make_state(MIDGAME_FEN), 5, alpha, beta, True, num_threads=1
     )
     par_score = c_helpers.alpha_beta(
-        make_state(MIDGAME_FEN), 5, alpha, beta, True, c_helpers.evaluate, num_threads=4
+        make_state(MIDGAME_FEN), 5, alpha, beta, True, num_threads=4
     )
     assert abs(seq_score - par_score) <= 150
 
@@ -84,7 +84,6 @@ def test_transposition_table_is_utilized(make_state):
         c_helpers.MIN,
         c_helpers.MAX,
         True,
-        c_helpers.evaluate,
         tt,
         1,
     )
@@ -97,7 +96,6 @@ def test_transposition_table_is_utilized(make_state):
         c_helpers.MIN,
         c_helpers.MAX,
         True,
-        c_helpers.evaluate,
         tt,
         1,
     )
@@ -105,39 +103,27 @@ def test_transposition_table_is_utilized(make_state):
     assert score_1 == score_2
 
 
-def test_alpha_beta_accepts_custom_evaluator(make_state):
-    """Verify Python callbacks can override evaluation logic."""
+def test_alpha_beta_is_deterministic(make_state):
+    """Built-in evaluator should be deterministic across repeated invocations."""
 
-    def simple_eval(state: c_helpers.BitboardState) -> int:
-        score = 0
-        for piece in state.to_fen().split()[0]:
-            if piece == "Q":
-                score += 900
-            elif piece == "q":
-                score -= 900
-        return score
-
-    baseline = c_helpers.alpha_beta(
+    first = c_helpers.alpha_beta(
         make_state(TACTICAL_FEN),
         3,
         c_helpers.MIN,
         c_helpers.MAX,
         True,
-        c_helpers.evaluate,
         num_threads=1,
     )
-    custom = c_helpers.alpha_beta(
+    second = c_helpers.alpha_beta(
         make_state(TACTICAL_FEN),
         3,
         c_helpers.MIN,
         c_helpers.MAX,
         True,
-        simple_eval,
         num_threads=1,
     )
-    assert isinstance(custom, int)
-    # custom evaluator should still return a finite score even if it matches baseline
-    assert custom == pytest.approx(custom)
+    assert isinstance(first, int)
+    assert first == second
 
 
 def test_quiescence_handles_tactics(make_state):
@@ -149,7 +135,6 @@ def test_quiescence_handles_tactics(make_state):
         c_helpers.MIN,
         c_helpers.MAX,
         True,
-        c_helpers.evaluate,
         tt,
         1,
     )
@@ -169,7 +154,6 @@ def test_alpha_beta_accepts_shared_tables(make_state):
         c_helpers.MIN,
         c_helpers.MAX,
         True,
-        c_helpers.evaluate,
         tt,
         2,
         killers,

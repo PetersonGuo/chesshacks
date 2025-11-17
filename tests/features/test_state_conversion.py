@@ -93,7 +93,6 @@ def test_bitboard_state_from_pgn_runs_search(pgn: str):
         c_helpers.MIN,
         c_helpers.MAX,
         True,
-        c_helpers.evaluate,
         tt,
         1,
     )
