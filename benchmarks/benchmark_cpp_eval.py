@@ -10,29 +10,32 @@ from __future__ import annotations
 
 import argparse
 import statistics
+import sys
 import time
+from pathlib import Path
 from typing import Callable, Dict, List, Tuple
 
 import c_helpers  # type: ignore
 import chess
 
 import benchmarks.conftest  # noqa: F401
-import engine
-from env_manager import get_env_config
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.append(str(REPO_ROOT))
+
+from src import engine  # type: ignore
+from src.env_manager import get_env_config  # type: ignore
 
 ENV_CONFIG = get_env_config()
 DEFAULT_DEPTH = ENV_CONFIG.search_depth
 DEFAULT_THREADS = max(1, ENV_CONFIG.search_threads)
 
-try:
-    import main as main_module  # type: ignore
+from src import main as main_module  # type: ignore
 
-    main_module.load_nnue_model()
-    ACTIVE_EVAL_FN = c_helpers.evaluate
-    NNUE_ACTIVE = True
-except Exception:  # pragma: no cover - optional dependency
-    ACTIVE_EVAL_FN = c_helpers.evaluate
-    NNUE_ACTIVE = False
+main_module.load_nnue_model()
+ACTIVE_EVAL_FN = c_helpers.evaluate
+NNUE_ACTIVE = True
 
 
 POSITIONS: List[Tuple[str, str]] = [

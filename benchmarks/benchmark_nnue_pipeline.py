@@ -79,19 +79,20 @@ print()
 tt1 = c_helpers.TranspositionTable()
 killer1 = c_helpers.KillerMoves()
 history1 = c_helpers.HistoryTable()
+counters1 = c_helpers.CounterMoveTable()
 
 start = time.time()
-score1 = c_helpers.alpha_beta(
+score1 = c_helpers.alpha_beta_builtin(
     _state(fen),
     depth,
     c_helpers.MIN,
     c_helpers.MAX,
     True,
-    c_helpers.evaluate,
     tt1,
     1,
     killer1,
     history1,
+    counters1,
 )
 time1 = time.time() - start
 
@@ -101,19 +102,20 @@ print(f"1 thread:     {time1:.4f}s (score: {score1}, nodes: {len(tt1)})")
 tt2 = c_helpers.TranspositionTable()
 killer2 = c_helpers.KillerMoves()
 history2 = c_helpers.HistoryTable()
+counters2 = c_helpers.CounterMoveTable()
 
 start = time.time()
-score2 = c_helpers.alpha_beta(
+score2 = c_helpers.alpha_beta_builtin(
     _state(fen),
     depth,
     c_helpers.MIN,
     c_helpers.MAX,
     True,
-    c_helpers.evaluate,
     tt2,
     0,
     killer2,
     history2,
+    counters2,
 )
 time2 = time.time() - start
 

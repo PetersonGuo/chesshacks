@@ -7,10 +7,116 @@
 
 #include <algorithm>
 #include <atomic>
+#include <condition_variable>
+#include <functional>
 #include <thread>
 #include <vector>
 
+#ifdef BUILDING_PY_MODULE
 #include <nanobind/nanobind.h>
+namespace nb = nanobind;
+#else
+namespace nb {
+class gil_scoped_release {
+public:
+  gil_scoped_release() = default;
+};
+} // namespace nb
+#endif
+namespace {
+
+class ThreadPool {
+public:
+  static ThreadPool &Instance() {
+    static ThreadPool pool;
+    return pool;
+  }
+
+  void run(size_t workers, const std::function<void()> &task,
+           const std::function<void()> &main_task) {
+    if (workers == 0) {
+      main_task();
+      return;
+    }
+    ensure_threads(workers);
+    {
+      std::lock_guard<std::mutex> lk(mutex_);
+      task_fn_ = task;
+      pending_workers_ = std::min(workers, threads_.size());
+      outstanding_.store(pending_workers_);
+      task_generation_++;
+      task_active_ = true;
+    }
+    cv_.notify_all();
+    main_task();
+    std::unique_lock<std::mutex> lk(mutex_);
+    done_cv_.wait(lk, [&] { return !task_active_; });
+  }
+
+private:
+  ThreadPool() = default;
+
+  ~ThreadPool() {
+    {
+      std::lock_guard<std::mutex> lk(mutex_);
+      shutdown_ = true;
+    }
+    cv_.notify_all();
+    for (auto &thread : threads_) {
+      if (thread.joinable()) {
+        thread.join();
+      }
+    }
+  }
+
+  void ensure_threads(size_t count) {
+    while (threads_.size() < count) {
+      size_t id = threads_.size();
+      threads_.emplace_back([this, id] { worker_loop(id); });
+    }
+  }
+
+  void worker_loop(size_t /*id*/) {
+    size_t seen_generation = 0;
+    while (true) {
+      std::unique_lock<std::mutex> lk(mutex_);
+      cv_.wait(lk, [&] {
+        return shutdown_ || task_generation_ > seen_generation;
+      });
+      if (shutdown_)
+        break;
+      if (!task_active_ || pending_workers_ == 0) {
+        seen_generation = task_generation_;
+        continue;
+      }
+      pending_workers_--;
+      auto task = task_fn_;
+      seen_generation = task_generation_;
+      lk.unlock();
+
+      task();
+
+      if (outstanding_.fetch_sub(1) == 1) {
+        std::lock_guard<std::mutex> lk2(mutex_);
+        task_active_ = false;
+        done_cv_.notify_one();
+      }
+    }
+  }
+
+  std::vector<std::thread> threads_;
+  std::mutex mutex_;
+  std::condition_variable cv_;
+  std::condition_variable done_cv_;
+  bool shutdown_ = false;
+  bool task_active_ = false;
+  size_t task_generation_ = 0;
+  size_t pending_workers_ = 0;
+  std::function<void()> task_fn_;
+  std::atomic<size_t> outstanding_{0};
+};
+
+} // namespace
 
 #ifdef CUDA_ENABLED
 #include "cuda/cuda_utils.h"
@@ -19,8 +125,6 @@
 using bitboard::BitboardState;
 using search_internal::EvalProvider;
 using search_internal::MakeEvalProvider;
-
-namespace nb = nanobind;
 
 // ============================================================================
 // Alpha-beta search with TT, move ordering, quiescence, and optional threading
@@ -435,11 +539,17 @@ int alpha_beta_impl(BitboardState board, int depth, int alpha, int beta,
   }
 
   unsigned int hw_threads = std::max(1u, std::thread::hardware_concurrency());
-  int default_threads = static_cast<int>(hw_threads);
-
   bool auto_threads = (num_threads <= 0);
-  int effective_threads =
-      auto_threads ? default_threads : std::max(1, std::min(num_threads, 64));
+
+  auto capped_auto_threads = [&](int depth) -> int {
+    unsigned int depth_cap =
+        depth <= 5 ? 4u : depth <= 7 ? 8u : std::min(16u, hw_threads);
+    return static_cast<int>(std::max(1u, std::min(hw_threads, depth_cap)));
+  };
+
+  int effective_threads = auto_threads
+                              ? capped_auto_threads(depth)
+                              : std::max(1, std::min(num_threads, 64));
   effective_threads =
       std::min(effective_threads, static_cast<int>(legal_moves.size()));
   const int original_alpha = alpha;
@@ -453,9 +563,10 @@ int alpha_beta_impl(BitboardState board, int depth, int alpha, int beta,
                                counters_ptr, cont_history_ptr);
   }
 
-  if (use_parallel && depth > 1) {
+  if (use_parallel && depth > 3) {
+    int warmup_depth = std::max(2, depth - 2);
     BitboardState prep_board = board;
-    iterative_deepening(prep_board, depth - 1, alpha, beta, maximizingPlayer,
+    iterative_deepening(prep_board, warmup_depth, alpha, beta, maximizingPlayer,
                         evaluate, tt_ref, killers_ptr, history_ptr,
                         counters_ptr, cont_history_ptr);
   }
@@ -518,7 +629,7 @@ int alpha_beta_impl(BitboardState board, int depth, int alpha, int beta,
       threads_to_use > 1) {
     std::atomic<size_t> next_index(1);
 
-    auto worker = [&](int /*thread_id*/) {
+    auto worker_body = [&]() {
       while (true) {
         if (cutoff.load(std::memory_order_relaxed))
           break;
@@ -533,6 +644,15 @@ int alpha_beta_impl(BitboardState board, int depth, int alpha, int beta,
             maximizingPlayer ? beta : std::min(beta, current_bound);
 
         int score = search_move(idx, local_alpha, local_beta);
+        const bool tightened_lower = maximizingPlayer && (local_alpha > alpha);
+        const bool tightened_upper = !maximizingPlayer && (local_beta < beta);
+
+        const bool fail_low = (score <= local_alpha);
+        const bool fail_high = (score >= local_beta);
+
+        if ((tightened_lower && fail_low) || (tightened_upper && fail_high)) {
+          score = search_move(idx, alpha, beta);
+        }
 
         results[idx] = {legal_moves[idx], score};
         evaluated[idx] = 1;
@@ -559,15 +679,7 @@ int alpha_beta_impl(BitboardState board, int depth, int alpha, int beta,
       }
     };
 
-    std::vector<std::thread> workers;
-    workers.reserve(std::max(0, threads_to_use - 1));
-    for (int t = 1; t < threads_to_use; ++t) {
-      workers.emplace_back(worker, t);
-    }
-    worker(0);
-    for (auto &th : workers) {
-      th.join();
-    }
+    ThreadPool::Instance().run(threads_to_use - 1, worker_body, worker_body);
   }
 
   int best_index = -1;

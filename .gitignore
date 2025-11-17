@@ -6,12 +6,10 @@ venv
 devtools
 build
 .claude
-train/data
-train/checkpoints
-CMakeFiles/
+**/data
+**/checkpoints
 data
-checkpoints
-third_party/libtorch
+third_party/
 .pytest_cache
 .chesshacks_env
 .vscode

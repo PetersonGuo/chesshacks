@@ -2,9 +2,15 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <iterator>
+#include <vector>
+
+#include <caffe2/serialize/inline_container.h>
+#include <torch/csrc/jit/serialization/pickle.h>
 #include <torch/serialize.h>
 #include <torch/torch.h>
 
@@ -71,18 +77,81 @@ enum NNUEPieceType {
   KING_TYPE = 5
 };
 
-bool NNUEEvaluator::load_model(const std::string &model_path) {
+namespace {
+
+bool LoadStateDictFromPickle(const std::string &model_path, TorchNNUE &module) {
+  std::vector<char> buffer;
   try {
-    torch_module_ = TorchNNUE();
-    torch::load(torch_module_, model_path);
-    torch_module_->to(torch::kCPU);
-    torch_module_->eval();
+    caffe2::serialize::PyTorchStreamReader reader(model_path);
+    const std::string kPayload = "data.pkl";
+    std::string record_name = kPayload;
+    for (const auto &entry : reader.getAllRecords()) {
+      if (entry.size() >= kPayload.size() &&
+          entry.substr(entry.size() - kPayload.size()) == kPayload) {
+        record_name = entry;
+        break;
+      }
+    }
+    auto record = reader.getRecord(record_name);
+    size_t size = std::get<1>(record);
+    buffer.resize(size);
+    std::memcpy(buffer.data(), std::get<0>(record).get(), size);
   } catch (const c10::Error &e) {
-    std::cerr << "Error: Failed to load NNUE model '" << model_path
-              << "' via torch::load: " << e.what() << std::endl;
+    std::cerr << "Error: Unable to read NNUE checkpoint " << model_path << ": "
+              << e.what() << std::endl;
+    return false;
+  }
+
+  torch::IValue ivalue;
+  try {
+    ivalue = torch::pickle_load(buffer);
+  } catch (const c10::Error &e) {
+    std::cerr << "Error: Unable to parse NNUE checkpoint " << model_path << ": "
+              << e.what() << std::endl;
+    return false;
+  }
+
+  if (!ivalue.isGenericDict()) {
+    std::cerr << "Error: NNUE checkpoint must be a state_dict serialized via "
+                 "torch.save(model.state_dict())."
+              << std::endl;
+    return false;
+  }
+
+  auto dict = ivalue.toGenericDict();
+  auto assign = [&](torch::OrderedDict<std::string, torch::Tensor> named) {
+    for (const auto &item : named) {
+      const std::string &name = item.key();
+      torch::Tensor tensor = item.value();
+      auto key = c10::IValue(name);
+      auto it = dict.find(key);
+      if (it == dict.end()) {
+        std::cerr << "Error: Missing parameter '" << name
+                  << "' in NNUE checkpoint." << std::endl;
+        return false;
+      }
+      tensor.copy_(it->value().toTensor());
+    }
+    return true;
+  };
+
+  if (!assign(module->named_parameters(/*recurse=*/true)))
+    return false;
+  if (!assign(module->named_buffers(/*recurse=*/true)))
+    return false;
+  return true;
+}
+
+} // namespace
+
+bool NNUEEvaluator::load_model(const std::string &model_path) {
+  torch_module_ = TorchNNUE();
+  if (!LoadStateDictFromPickle(model_path, torch_module_)) {
     model_loaded_ = false;
     return false;
   }
+  torch_module_->to(torch::kCPU);
+  torch_module_->eval();
 
   load_stats_for(model_path);
 

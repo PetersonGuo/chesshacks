@@ -238,16 +238,24 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${TORCH_CXX_FLAGS}")
 include_directories(${CMAKE_SOURCE_DIR}/include)
 include_directories(${CMAKE_SOURCE_DIR}/third_party/surge/src)
 
-# Source files
-set(SOURCE_FILES
-    lib/core/bindings.cpp
+if(CUDA_ENABLED)
+    add_subdirectory(lib/cuda)
+endif()
+
+FetchContent_Declare(
+    googletest
+    URL https://github.com/google/googletest/archive/refs/tags/v1.14.0.zip
+)
+FetchContent_MakeAvailable(googletest)
+
+# Core engine sources (shared by module and native tests)
+set(CHESS_CORE_SOURCES
     lib/core/move_ordering.cpp
     lib/core/transposition_table.cpp
     lib/core/evaluation.cpp
     lib/core/nnue_evaluator.cpp
     lib/core/search_common.cpp
     lib/core/search_alpha_beta.cpp
-    lib/core/search_best_move.cpp
     lib/core/search_pgn.cpp
     lib/bitboard/bitboard_state.cpp
     lib/cuda/cuda_utils.cpp
@@ -257,40 +265,35 @@ set(SOURCE_FILES
     third_party/surge/src/types.cpp
 )
 
+set(SOURCE_FILES
+    lib/core/bindings.cpp
+    lib/core/search_best_move.cpp
+    ${CHESS_CORE_SOURCES}
+)
+
 set_source_files_properties(third_party/surge/src/tables.cpp
     PROPERTIES COMPILE_FLAGS "-include cstring")
 
-# Add CUDA files if CUDA is enabled
+nanobind_add_module(c_helpers ${SOURCE_FILES})
+target_compile_definitions(c_helpers PRIVATE BUILDING_PY_MODULE)
+target_include_directories(c_helpers PRIVATE
+    ${CMAKE_SOURCE_DIR}/include/cuda
+)
+
 if(CUDA_ENABLED)
-    list(APPEND SOURCE_FILES
-        lib/cuda/cuda_eval.cu
-    )
-
-    # Create the extension module with CUDA support
-    nanobind_add_module(c_helpers ${SOURCE_FILES})
-
-    # Set CUDA compilation flags and include directories
+    if(NOT CHESSHACKS_CUDA_LIBRARY)
+        message(FATAL_ERROR "CUDA enabled but cuda helpers were not configured.")
+    endif()
     target_compile_definitions(c_helpers PRIVATE CUDA_ENABLED)
-    target_include_directories(c_helpers PRIVATE
-        ${CUDAToolkit_INCLUDE_DIRS}
-        ${CMAKE_SOURCE_DIR}/include/cuda
-    )
-    target_link_libraries(c_helpers PRIVATE CUDA::cudart ${TORCH_LIBRARIES})
+    target_include_directories(c_helpers PRIVATE ${CUDAToolkit_INCLUDE_DIRS})
+    target_link_libraries(c_helpers PRIVATE ${CHESSHACKS_CUDA_LIBRARY} CUDA::cudart ${TORCH_LIBRARIES})
     set_target_properties(c_helpers PROPERTIES
         CUDA_SEPARABLE_COMPILATION ON
         CUDA_RESOLVE_DEVICE_SYMBOLS ON
     )
-
     message(STATUS "Building with CUDA support")
     message(STATUS "CUDA Architectures: ${CMAKE_CUDA_ARCHITECTURES}")
 else()
-    # Create the extension module without CUDA
-    nanobind_add_module(c_helpers ${SOURCE_FILES})
-
-    # Include cuda directory for headers
-    target_include_directories(c_helpers PRIVATE
-        ${CMAKE_SOURCE_DIR}/include/cuda
-    )
     target_link_libraries(c_helpers PRIVATE ${TORCH_LIBRARIES})
     message(STATUS "Building CPU-only version")
 endif()
@@ -309,19 +312,24 @@ if(_torch_rpath)
     )
 endif()
 
+add_subdirectory(tests ${CMAKE_BINARY_DIR}/tests)
+
 # Create a symlink from build/tests to ../tests for easier test execution
+set(CHESSHACKS_TESTS_SYMLINK "${CMAKE_BINARY_DIR}/tests_src")
+set(CHESSHACKS_BENCH_SYMLINK "${CMAKE_BINARY_DIR}/benchmarks_src")
+
 add_custom_command(TARGET c_helpers POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E remove -f ${CHESSHACKS_TESTS_SYMLINK}
     COMMAND ${CMAKE_COMMAND} -E create_symlink
     ${CMAKE_SOURCE_DIR}/tests
-    ${CMAKE_BINARY_DIR}/tests
-    || (exit 0)
+    ${CHESSHACKS_TESTS_SYMLINK}
     COMMENT "Creating symlink to tests directory"
 )
 
 add_custom_command(TARGET c_helpers POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E remove -f ${CHESSHACKS_BENCH_SYMLINK}
     COMMAND ${CMAKE_COMMAND} -E create_symlink
     ${CMAKE_SOURCE_DIR}/benchmarks
-    ${CMAKE_BINARY_DIR}/benchmarks
-    || (exit 0)
+    ${CHESSHACKS_BENCH_SYMLINK}
     COMMENT "Creating symlink to benchmarks directory"
 )

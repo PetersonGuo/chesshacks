@@ -143,7 +143,15 @@ batch_evaluate_mt(const std::vector<bitboard::BitboardState> &boards,
   }
 
   // For small batches, use single thread
-  if (boards.size() < static_cast<size_t>(num_threads) || num_threads == 1) {
+  const size_t min_per_thread = 64;
+  if (boards.size() < min_per_thread) {
+    num_threads = 1;
+  } else if (boards.size() <
+             static_cast<size_t>(num_threads) * min_per_thread) {
+    num_threads = std::max<size_t>(1, boards.size() / min_per_thread);
+  }
+
+  if (num_threads <= 1) {
     for (size_t i = 0; i < boards.size(); i++) {
       scores[i] = evaluate(boards[i]);
     }

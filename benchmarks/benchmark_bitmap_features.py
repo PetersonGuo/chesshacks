@@ -1,11 +1,14 @@
 """
 Benchmark bitmap NNUE implementation vs theoretical sparse version
 """
-import torch
-import chess
+
 import time
+
+import chess
 import numpy as np
-from model import ChessNNUEModel, BitboardFeatures
+import torch
+
+from train.nnue_model.model import BitboardFeatures, ChessNNUEModel
 
 
 def benchmark_feature_extraction(num_positions=1000):
@@ -20,7 +23,9 @@ def benchmark_feature_extraction(num_positions=1000):
     # Benchmark bitmap feature extraction
     start = time.time()
     for board in boards:
-        features = BitboardFeatures.board_to_features_for_side(board, perspective=board.turn)
+        features = BitboardFeatures.board_to_features_for_side(
+            board, perspective=board.turn
+        )
     bitmap_time = time.time() - start
 
     print(f"\nBitmap feature extraction:")
@@ -32,7 +37,9 @@ def benchmark_feature_extraction(num_positions=1000):
 def benchmark_model_inference(num_positions=1000, batch_size=256):
     """Benchmark model inference speed"""
     print("\n" + "=" * 80)
-    print(f"Benchmarking Model Inference ({num_positions} positions, batch_size={batch_size})")
+    print(
+        f"Benchmarking Model Inference ({num_positions} positions, batch_size={batch_size})"
+    )
     print("=" * 80)
 
     model = ChessNNUEModel()
@@ -63,7 +70,9 @@ def benchmark_model_inference(num_positions=1000, batch_size=256):
     start = time.time()
     with torch.no_grad():
         for i in range(num_batches):
-            batch_features = torch.stack(features_list[i*batch_size:(i+1)*batch_size], dim=0)
+            batch_features = torch.stack(
+                features_list[i * batch_size : (i + 1) * batch_size], dim=0
+            )
             outputs = model(batch_features)
     batch_time = time.time() - start
 
@@ -71,7 +80,9 @@ def benchmark_model_inference(num_positions=1000, batch_size=256):
     print(f"  Total time ({positions_processed} positions): {batch_time:.4f}s")
     print(f"  Per position: {batch_time/positions_processed*1000:.4f}ms")
     print(f"  Throughput: {positions_processed/batch_time:.0f} positions/sec")
-    print(f"  Speedup vs single: {single_time/100 / (batch_time/positions_processed):.2f}x")
+    print(
+        f"  Speedup vs single: {single_time/100 / (batch_time/positions_processed):.2f}x"
+    )
 
 
 def benchmark_gpu_inference(num_positions=1000, batch_size=256):
@@ -83,40 +94,45 @@ def benchmark_gpu_inference(num_positions=1000, batch_size=256):
         return
 
     print("\n" + "=" * 80)
-    print(f"Benchmarking GPU Inference ({num_positions} positions, batch_size={batch_size})")
+    print(
+        f"Benchmarking GPU Inference ({num_positions} positions, batch_size={batch_size})"
+    )
     print("=" * 80)
 
-    device = torch.device('cuda')
-    model = ChessNNUEModel()
-    model = model.to(device)
-    model.eval()
+    try:
+        device = torch.device("cuda")
+        model = ChessNNUEModel().to(device)
+        model.eval()
 
-    # Create random positions
-    boards = [chess.Board() for _ in range(num_positions)]
-    features_list = [
-        BitboardFeatures.board_to_features_for_side(board, perspective=board.turn).to(device)
-        for board in boards
-    ]
+        boards = [chess.Board() for _ in range(num_positions)]
+        features_list = [
+            BitboardFeatures.board_to_features_for_side(
+                board, perspective=board.turn
+            ).to(device)
+            for board in boards
+        ]
 
-    # Warmup
-    with torch.no_grad():
-        batch_features = torch.stack(features_list[:batch_size], dim=0)
-        _ = model(batch_features)
+        with torch.no_grad():
+            batch_features = torch.stack(features_list[:batch_size], dim=0)
+            _ = model(batch_features)
 
-    # Benchmark
-    num_batches = num_positions // batch_size
-    start = time.time()
-    with torch.no_grad():
-        for i in range(num_batches):
-            batch_features = torch.stack(features_list[i*batch_size:(i+1)*batch_size], dim=0)
-            outputs = model(batch_features)
-    torch.cuda.synchronize()
-    gpu_time = time.time() - start
+        num_batches = num_positions // batch_size
+        start = time.time()
+        with torch.no_grad():
+            for i in range(num_batches):
+                batch_features = torch.stack(
+                    features_list[i * batch_size : (i + 1) * batch_size], dim=0
+                )
+                _ = model(batch_features)
+        torch.cuda.synchronize()
+        gpu_time = time.time() - start
 
-    positions_processed = num_batches * batch_size
-    print(f"  Total time ({positions_processed} positions): {gpu_time:.4f}s")
-    print(f"  Per position: {gpu_time/positions_processed*1000:.4f}ms")
-    print(f"  Throughput: {positions_processed/gpu_time:.0f} positions/sec")
+        positions_processed = num_batches * batch_size
+        print(f"  Total time ({positions_processed} positions): {gpu_time:.4f}s")
+        print(f"  Per position: {gpu_time/positions_processed*1000:.4f}ms")
+        print(f"  Throughput: {positions_processed/gpu_time:.0f} positions/sec")
+    except RuntimeError as err:
+        print("  Skipping GPU benchmark due to runtime error:", err)
 
 
 def analyze_model_size():
@@ -146,12 +162,18 @@ def analyze_model_size():
     sparse_hidden = 256
     sparse_first_layer = sparse_input * sparse_hidden + sparse_hidden
 
+    friendly_params = model.ft_friendly.weight.numel() + model.ft_friendly.bias.numel()
+    enemy_params = model.ft_enemy.weight.numel() + model.ft_enemy.bias.numel()
+    bitmap_first_layer = friendly_params + enemy_params
+
     print(f"\nTheoretical Sparse HalfKP:")
     print(f"  Input features: {sparse_input:,}")
     print(f"  First layer params: {sparse_first_layer:,}")
-    print(f"  Model size (est): {(sparse_first_layer + total_params - model.ft.weight.numel() - model.ft.bias.numel()) * 4 / 1024 / 1024:.2f} MB")
-
-    print(f"\nMemory reduction: {sparse_first_layer / (model.ft.weight.numel() + model.ft.bias.numel()):.1f}x smaller")
+    print(f"  Bitmap first-stage params: {bitmap_first_layer:,}")
+    print(
+        f"  Memory reduction vs sparse first layer: "
+        f"{sparse_first_layer / bitmap_first_layer:.1f}x smaller"
+    )
 
 
 if __name__ == "__main__":

@@ -48,14 +48,11 @@ def main():
     fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
     print(f"\nTest Position: {fen}")
 
-    # Create evaluation function
-    def evaluate(fen_str):
-        return c_helpers.evaluate(_state(fen_str))
-
     # Create search data structures
     tt = c_helpers.TranspositionTable()
     killers = c_helpers.KillerMoves()
     history = c_helpers.HistoryTable()
+    counters = c_helpers.CounterMoveTable()
 
     # Test different depths
     depths = [3, 4, 5]
@@ -72,19 +69,20 @@ def main():
         tt.clear()
         killers.clear()
         history.clear()
+        counters.clear()
 
         def cpu_search(fen, d):
-            return c_helpers.alpha_beta(
+            return c_helpers.alpha_beta_builtin(
                 _state(fen),
                 d,
                 c_helpers.MIN,
                 c_helpers.MAX,
                 True,
-                evaluate,
                 tt,
                 0,
                 killers,
                 history,
+                counters,
             )
 
         cpu_time = benchmark_search("CPU (Optimized)", cpu_search, fen, depth)
@@ -95,6 +93,7 @@ def main():
             tt.clear()
             killers.clear()
             history.clear()
+            counters.clear()
 
             def cuda_search(fen, d):
                 return c_helpers.alpha_beta_cuda(
@@ -103,10 +102,10 @@ def main():
                     c_helpers.MIN,
                     c_helpers.MAX,
                     True,
-                    evaluate,
                     tt,
                     killers,
                     history,
+                    counters,
                 )
 
             cuda_time = benchmark_search("CUDA (GPU)", cuda_search, fen, depth)

@@ -228,5 +228,71 @@ std::string pgn_to_fen(const std::string &pgn) {
 }
 
 BitboardState pgn_to_bitboard(const std::string &pgn) {
-  return BitboardState(pgn_to_fen(pgn));
+  BitboardState board(
+      "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+
+  std::string moves_text = pgn;
+  std::istringstream iss(moves_text);
+  std::string line;
+  std::string clean_moves;
+  bool in_headers = true;
+
+  while (std::getline(iss, line)) {
+    if (line.empty()) {
+      in_headers = false;
+      continue;
+    }
+    if (in_headers && (line[0] == '[' || line.find("[Event") == 0 ||
+                       line.find("[Site") == 0 || line.find("[Date") == 0 ||
+                       line.find("[White") == 0 || line.find("[Black") == 0 ||
+                       line.find("[Result") == 0)) {
+      continue;
+    }
+    if (!in_headers || line[0] != '[') {
+      clean_moves += line + " ";
+      in_headers = false;
+    }
+  }
+
+  std::regex move_pattern(R"(\d+\.\s*([^\s]+\s+[^\s]+|[^\s]+))");
+  std::smatch matches;
+  std::string::const_iterator search_start(clean_moves.cbegin());
+
+  std::vector<std::string> parsed_moves;
+  while (std::regex_search(search_start, clean_moves.cend(), matches,
+                           move_pattern)) {
+    std::string move_pair = matches[1].str();
+
+    std::istringstream move_stream(move_pair);
+    std::string white_move, black_move;
+    move_stream >> white_move;
+    if (move_stream >> black_move) {
+      parsed_moves.push_back(white_move);
+      parsed_moves.push_back(black_move);
+    } else {
+      parsed_moves.push_back(white_move);
+    }
+
+    search_start = matches[0].second;
+  }
+
+  if (parsed_moves.empty()) {
+    std::istringstream move_stream(clean_moves);
+    std::string move;
+    while (move_stream >> move) {
+      if (move.find('.') == std::string::npos && move != "1-0" &&
+          move != "0-1" && move != "1/2-1/2" && move != "*" &&
+          move.find('-') == std::string::npos) {
+        parsed_moves.push_back(move);
+      }
+    }
+  }
+
+  for (const std::string &move : parsed_moves) {
+    if (!parse_and_apply_san(board, move)) {
+      continue;
+    }
+  }
+
+  return board;
 }

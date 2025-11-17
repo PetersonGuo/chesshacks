@@ -83,10 +83,17 @@ Benchmarks: `benchmark_multithreading.py`, `benchmark_profile_multithreading.py`
 ## 4. Testing & Tooling
 
 ```bash
-# Unit + integration tests
-cd build && python -m pytest ../tests -v
+# Configure + build (if you skipped ./build.sh)
+cmake -S . -B build
+cmake --build build
 
-# Targeted suite
+# C++ tests (GoogleTest)
+cd build
+ctest --output-on-failure   # runs tests/cpp_tests
+./tests/cpp_tests           # alternatively run the binary directly
+
+# Python suites (pytest)
+python -m pytest ../tests -v
 python -m pytest tests/bot/test_parallel_optimizations.py -v
 
 # Dev UI (auto rebuild backend, watch logs)
@@ -136,14 +143,14 @@ Configs (`train/nnue_model/configs/*.yaml`) cover CPU-only, RTX5070, and quality
 
 ## 6. Frequently Used Paths & Commands
 
-| Task                      | Command / File                                                 |
-| ------------------------- | -------------------------------------------------------------- | -------------------------------------------------- |
-| Rebuild native module     | `./build.sh` (uses existing venv)                              |
-| Clean build artifacts     | `rm -rf build` or `./build.sh clean`                           |
-| Launch FastAPI without UI | `source .chesshacks_env && python serve.py`                    |
-| Inspect libtorch variant  | `cmake -LAH                                                    | grep CHESSHACKS_LIBTORCH` (after configuring once) |
-| Add tests                 | `tests/bot/` for engine logic, `tests/training/` for NNUE      |
-| Add benchmarks            | drop scripts in `benchmarks/` (CI runs the perf suite nightly) |
+| Task                          | Command / File                                                 |
+| ----------------------------- | -------------------------------------------------------------- | -------------------------------------------------- |
+| Rebuild native module + tests | `./build.sh` (uses existing venv)                              |
+| Clean build artifacts         | `rm -rf build` or `./build.sh clean`                           |
+| Launch FastAPI without UI     | `source .chesshacks_env && python serve.py`                    |
+| Inspect libtorch variant      | `cmake -LAH                                                    | grep CHESSHACKS_LIBTORCH` (after configuring once) |
+| Add tests                     | Python: `tests/` (pytest); C++: `tests/cpp/*.cpp` (GoogleTest) |
+| Add benchmarks                | drop scripts in `benchmarks/` (CI runs the perf suite nightly) |
 
 ---
 

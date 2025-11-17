@@ -27,44 +27,8 @@ def profile_search_methods():
     fen = "r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4"
     depth = 5
 
-    def simple_evaluate(fen_str):
-        """Simple material evaluation."""
-        piece_values = {
-            "P": 100,
-            "N": 320,
-            "B": 330,
-            "R": 500,
-            "Q": 900,
-            "K": 0,
-            "p": -100,
-            "n": -320,
-            "b": -330,
-            "r": -500,
-            "q": -900,
-            "k": 0,
-        }
-        return sum(piece_values.get(c, 0) for c in fen_str.split()[0])
-
     print(f"Position: Italian Game (complex middlegame)")
     print(f"Depth: {depth}")
-    print()
-
-    # 1. Basic (no optimizations)
-    print("1. BASIC SEARCH (no optimizations)")
-    print("-" * 80)
-    try:
-        start = time.time()
-        score_basic = c_helpers.alpha_beta(
-            _state(fen), depth, c_helpers.MIN, c_helpers.MAX, True, simple_evaluate
-        )
-        time_basic = time.time() - start
-        print(f"   Score: {score_basic:6d}")
-        print(f"   Time:  {time_basic:.3f}s")
-        print(f"   Nodes/s: {0:.0f} (no TT tracking)")
-    except Exception as e:
-        print(f"   Error: {e}")
-        time_basic = None
-        score_basic = None
     print()
 
     # 2. Optimized Sequential
@@ -73,19 +37,20 @@ def profile_search_methods():
     tt_seq = c_helpers.TranspositionTable()
     killer = c_helpers.KillerMoves()
     history = c_helpers.HistoryTable()
+    counters = c_helpers.CounterMoveTable()
 
     start = time.time()
-    score_opt = c_helpers.alpha_beta(
+    score_opt = c_helpers.alpha_beta_builtin(
         _state(fen),
         depth,
         c_helpers.MIN,
         c_helpers.MAX,
         True,
-        c_helpers.evaluate,
         tt_seq,
         1,
         killer,
         history,
+        counters,
     )
     time_opt = time.time() - start
     nodes_opt = len(tt_seq)
@@ -95,9 +60,6 @@ def profile_search_methods():
     print(f"   TT entries: {nodes_opt:6d}")
     print(f"   Nodes/s: {nodes_opt/time_opt:.0f}")
 
-    if time_basic:
-        speedup = time_basic / time_opt
-        print(f"   Speedup vs Basic: {speedup:.1f}x")
     print()
 
     # 3. Optimized Multithreaded
@@ -106,19 +68,20 @@ def profile_search_methods():
     tt_par = c_helpers.TranspositionTable()
     killer_par = c_helpers.KillerMoves()
     history_par = c_helpers.HistoryTable()
+    counters_par = c_helpers.CounterMoveTable()
 
     start = time.time()
-    score_par = c_helpers.alpha_beta(
+    score_par = c_helpers.alpha_beta_builtin(
         _state(fen),
         depth,
         c_helpers.MIN,
         c_helpers.MAX,
         True,
-        c_helpers.evaluate,
         tt_par,
         4,
         killer_par,
         history_par,
+        counters_par,
     )
     time_par = time.time() - start
     nodes_par = len(tt_par)
@@ -149,6 +112,7 @@ def profile_search_methods():
     tt_cuda = c_helpers.TranspositionTable()
     killer_cuda = c_helpers.KillerMoves()
     history_cuda = c_helpers.HistoryTable()
+    counters_cuda = c_helpers.CounterMoveTable()
 
     start = time.time()
     score_cuda = c_helpers.alpha_beta_cuda(
@@ -157,10 +121,10 @@ def profile_search_methods():
         c_helpers.MIN,
         c_helpers.MAX,
         True,
-        c_helpers.evaluate,
         tt_cuda,
         killer_cuda,
         history_cuda,
+        counters_cuda,
     )
     time_cuda = time.time() - start
     nodes_cuda = len(tt_cuda)
@@ -183,8 +147,6 @@ def profile_search_methods():
     print("=" * 80)
 
     results = []
-    if time_basic:
-        results.append(("Basic (no opts)", time_basic, 0, score_basic))
     results.append(("Optimized (1 thread)", time_opt, nodes_opt, score_opt))
     results.append(("Multithreaded (4 threads)", time_par, nodes_par, score_par))
     results.append(("CUDA (GPU)", time_cuda, nodes_cuda, score_cuda))

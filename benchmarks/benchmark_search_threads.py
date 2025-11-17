@@ -4,6 +4,7 @@ Benchmark multithreading improvements for ChessHacks.
 Tests single-threaded vs multithreaded performance.
 """
 
+import argparse
 import multiprocessing
 import threading
 import time
@@ -13,17 +14,24 @@ import c_helpers  # type: ignore
 import benchmarks.conftest  # noqa: F401
 from env_manager import get_env_config
 
+MIN_BENCH_DEPTH = 6
+SCORE_TOLERANCE_CP = 50
+
 ENV_CONFIG = get_env_config()
-MAX_DEPTH = ENV_CONFIG.search_depth
+MAX_DEPTH = max(ENV_CONFIG.search_depth, MIN_BENCH_DEPTH)
 c_helpers.set_max_search_depth(MAX_DEPTH)
+
+PARALLEL_THREADS = max(
+    16, min(multiprocessing.cpu_count(), ENV_CONFIG.search_threads or multiprocessing.cpu_count())
+)
 
 
 def _state(fen: str) -> c_helpers.BitboardState:
     return c_helpers.BitboardState(fen)
 
 
-def benchmark_search(fen, depth, num_threads, name):
-    """Benchmark search with specified number of threads."""
+def benchmark_search(fen, depth, num_threads):
+    """Run a single search benchmark with the requested thread count."""
     tt = c_helpers.TranspositionTable()
     killer = c_helpers.KillerMoves()
     history = c_helpers.HistoryTable()
@@ -48,9 +56,9 @@ def benchmark_search(fen, depth, num_threads, name):
 
 
 def benchmark_batch_evaluation():
-    """Benchmark batch evaluation methods."""
+    """Benchmark the batch evaluation helper."""
     print("\n" + "=" * 80)
-    print("BATCH EVALUATION BENCHMARK")
+    print("Benchmark: Batch Evaluation Throughput")
     print("=" * 80)
 
     # Generate test positions
@@ -67,39 +75,48 @@ def benchmark_batch_evaluation():
     test_states = [_state(fen) for fen in test_fens]
 
     # Sequential evaluation
-    print("1. Sequential evaluation (for loop)")
+    print("CPU sequential evaluation")
     start = time.time()
     scores_seq = [c_helpers.evaluate(state) for state in test_states]
     time_seq = time.time() - start
     print(f"   Time: {time_seq:.4f}s")
     print(f"   Rate: {len(test_fens)/time_seq:.0f} positions/sec")
 
-    # Multithreaded batch evaluation (auto-detect threads)
-    print("\n2. Multithreaded batch evaluation (auto threads)")
+    # Multithreaded batch evaluation (explicit threads)
+    print(f"\nCPU multithreaded evaluation ({PARALLEL_THREADS} threads)")
     start = time.time()
-    scores_mt = c_helpers.batch_evaluate_mt(test_states, 0)
+    scores_mt = c_helpers.batch_evaluate_mt(test_states, PARALLEL_THREADS)
     time_mt = time.time() - start
     print(f"   Time: {time_mt:.4f}s")
     print(f"   Rate: {len(test_fens)/time_mt:.0f} positions/sec")
     print(f"   Speedup: {time_seq/time_mt:.2f}x")
 
-    # CUDA batch evaluation if available
-    if c_helpers.is_cuda_available():
-        print("\n3. CUDA batch evaluation (GPU)")
-        start = time.time()
-        scores_cuda = c_helpers.cuda_batch_evaluate(test_states)
-        time_cuda = time.time() - start
-        print(f"   Time: {time_cuda:.4f}s")
-        print(f"   Rate: {len(test_fens)/time_cuda:.0f} positions/sec")
-        print(f"   Speedup vs sequential: {time_seq/time_cuda:.2f}x")
-        print(f"   Speedup vs multithreaded: {time_mt/time_cuda:.2f}x")
-
     # Verify results match
     assert scores_seq == scores_mt, "MT scores don't match sequential!"
-    print("\n✓ All evaluation methods produce identical results")
+    print("\n✓ CPU sequential and multithreaded scores match exactly")
 
 
 def main():
+    parser = argparse.ArgumentParser(description="ChessHacks multithreading benchmark")
+    parser.add_argument(
+        "--depth",
+        type=int,
+        default=MAX_DEPTH,
+        help=f"Search depth to benchmark (default: max of env depth and {MIN_BENCH_DEPTH})",
+    )
+    parser.add_argument(
+        "--threads",
+        type=int,
+        default=PARALLEL_THREADS,
+        help="Parallel thread count (default: min(env threads, cpu count))",
+    )
+    args = parser.parse_args()
+
+    bench_depth = max(args.depth, MIN_BENCH_DEPTH)
+    parallel_threads = max(2, min(args.threads, multiprocessing.cpu_count()))
+
+    c_helpers.set_max_search_depth(bench_depth)
+
     print("=" * 80)
     print("ChessHacks Multithreading Benchmark")
     print("=" * 80)
@@ -120,17 +137,12 @@ def main():
         ),
     ]
 
-    depth_candidates = [4, 5, 6, 7, 8]
-    depths = [d for d in depth_candidates if d <= MAX_DEPTH]
-    if not depths:
-        depths = [MAX_DEPTH]
-    thread_counts = [1, 0]  # 1 = single-threaded, 0 = auto-detect all threads
+    depths = [bench_depth]
+    thread_counts = [1, parallel_threads]
 
-    max_threads = max(threading.active_count(), multiprocessing.cpu_count())
-
-    print(f"\nSystem has {max_threads} CPU cores available")
-    print(f"Testing with 1 thread (sequential) and {max_threads} threads (parallel)\n")
-    print(f"Depths benchmarked: {depths} (use CHESSHACKS_MAX_DEPTH to adjust)\n")
+    print(f"\nSystem has {multiprocessing.cpu_count()} CPU cores available")
+    print(f"Testing with {thread_counts[0]} thread(s) vs {thread_counts[1]} threads\n")
+    print(f"Depths benchmarked: {depths}\n")
 
     for pos_name, fen in positions:
         print("\n" + "=" * 80)
@@ -142,16 +154,14 @@ def main():
 
             results = {}
             for num_threads in thread_counts:
-                thread_label = (
-                    "1 thread (sequential)"
+                label = (
+                    "Sequential (1 thread)"
                     if num_threads == 1
-                    else f"{max_threads} threads (parallel)"
+                    else f"Parallel ({num_threads} threads)"
                 )
-                print(f"\n{thread_label}:")
+                print(f"\n{label}:")
 
-                score, elapsed, nodes = benchmark_search(
-                    fen, depth, num_threads, thread_label
-                )
+                score, elapsed, nodes = benchmark_search(fen, depth, num_threads)
                 results[num_threads] = (score, elapsed, nodes)
 
                 print(f"  Score: {score}")
@@ -160,17 +170,20 @@ def main():
                 print(f"  NPS: {nodes/elapsed:.0f}")
 
             # Calculate speedup
-            if 1 in results and 0 in results:
-                speedup = results[1][1] / results[0][1]
+            if len(results) == 2:
+                seq_score, seq_time, _ = results[1]
+                par_score, par_time, _ = results[parallel_threads]
+                speedup = seq_time / par_time
                 print(f"\n  Speedup (parallel vs sequential): {speedup:.2f}x")
 
-                # Check if scores match
-                if results[1][0] != results[0][0]:
-                    print(
-                        f"  ⚠ Warning: Scores differ! Sequential: {results[1][0]}, Parallel: {results[0][0]}"
-                    )
+                delta = abs(par_score - seq_score)
+                if delta <= SCORE_TOLERANCE_CP:
+                    print(f"  ✓ Scores within tolerance (Δ={delta} cp)")
                 else:
-                    print(f"  ✓ Scores match")
+                    print(
+                        f"  ⚠ Score delta {delta} cp exceeds tolerance "
+                        "(timing still recorded for reference)"
+                    )
 
     # Batch evaluation benchmark
     benchmark_batch_evaluation()

@@ -35,20 +35,21 @@ print("=" * 80)
 tt = c_helpers.TranspositionTable()
 killers = c_helpers.KillerMoves()
 history = c_helpers.HistoryTable()
+counters = c_helpers.CounterMoveTable()
 
 start = time.perf_counter()
 for i in range(ITERATIONS):
-    score = c_helpers.alpha_beta(
+    score = c_helpers.alpha_beta_builtin(
         _state(FEN),
         DEPTH,
         c_helpers.MIN,
         c_helpers.MAX,
         True,
-        c_helpers.evaluate,
         tt,
         num_threads,
         killers,
         history,
+        counters,
     )
     print(f"Iteration {i+1}: score={score}")
 
