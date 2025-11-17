@@ -22,7 +22,7 @@ try:
 except ImportError:
     # Allow running as a standalone script (python train/nnue_model/test_virgo_style.py)
     sys.path.insert(0, os.path.dirname(__file__))
-    from model import ChessNNUEModel, BitboardFeatures
+from model import ChessNNUEModel, BitboardFeatures
 
 
 def test_virgo_structure():

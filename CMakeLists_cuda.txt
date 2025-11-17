@@ -10,13 +10,13 @@ if(CMAKE_CUDA_COMPILER)
     enable_language(CUDA)
     set(CUDA_ENABLED ON)
     message(STATUS "CUDA found - enabling GPU acceleration")
-    
+
     # Set CUDA architecture (adjust based on your GPU)
     # Common values: 50 (Maxwell), 60 (Pascal), 70 (Volta), 75 (Turing), 80 (Ampere), 89 (Ada)
     if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
-        set(CMAKE_CUDA_ARCHITECTURES 75 80 86 89)  # Support modern GPUs
+        set(CMAKE_CUDA_ARCHITECTURES 75 80 86 89) # Support modern GPUs
     endif()
-    
+
     # Set CUDA standard
     set(CMAKE_CUDA_STANDARD 14)
     set(CMAKE_CUDA_STANDARD_REQUIRED ON)
@@ -25,7 +25,7 @@ else()
     message(STATUS "CUDA not found - GPU acceleration disabled")
 endif()
 
-if (CMAKE_VERSION VERSION_LESS 3.18)
+if(CMAKE_VERSION VERSION_LESS 3.18)
     set(DEV_MODULE Development)
 else()
     set(DEV_MODULE Development.Module)
@@ -40,25 +40,36 @@ execute_process(
 find_package(nanobind CONFIG REQUIRED)
 
 # Add the source directory to include paths
-include_directories(${CMAKE_SOURCE_DIR}/src)
+include_directories(${CMAKE_SOURCE_DIR}/include)
+include_directories(${CMAKE_SOURCE_DIR}/third_party/surge/src)
+include_directories(${CMAKE_SOURCE_DIR}/include/cuda)
 
 # Source files
 set(SOURCE_FILES
-    src/bindings.cpp
-    src/cuda_utils.cpp
-    src/move_ordering.cpp
-    src/transposition_table.cpp
-    src/evaluation.cpp
-    src/search_and_utils.cpp
+    lib/core/bindings.cpp
+    lib/core/move_ordering.cpp
+    lib/core/transposition_table.cpp
+    lib/core/evaluation.cpp
+    lib/core/search_common.cpp
+    lib/core/search_alpha_beta.cpp
+    lib/core/search_best_move.cpp
+    lib/core/search_pgn.cpp
+    lib/core/nnue_evaluator.cpp
+    lib/bitboard/bitboard_state.cpp
+    lib/cuda/cuda_utils.cpp
+    third_party/surge/src/position.cpp
+    third_party/surge/src/tables.cpp
+    third_party/surge/src/types.cpp
+    lib/third_party/surge_inline.cpp
 )
 
 # Add CUDA source if available
 if(CUDA_ENABLED)
-    list(APPEND SOURCE_FILES src/cuda_eval.cu)
-    
+    list(APPEND SOURCE_FILES lib/cuda/cuda_eval.cu)
+
     # Create the extension module with CUDA support
     nanobind_add_module(c_helpers ${SOURCE_FILES})
-    
+
     # Set CUDA compilation flags
     target_compile_definitions(c_helpers PRIVATE CUDA_ENABLED)
     set_target_properties(c_helpers PROPERTIES
@@ -70,10 +81,24 @@ else()
     nanobind_add_module(c_helpers ${SOURCE_FILES})
 endif()
 
+set(_torch_rpath "")
+if(DEFINED CHESSHACKS_LIBTORCH_ROOT)
+    set(_torch_rpath "${CHESSHACKS_LIBTORCH_ROOT}/lib")
+elseif(Torch_DIR)
+    get_filename_component(_torch_root "${Torch_DIR}/../.." ABSOLUTE)
+    set(_torch_rpath "${_torch_root}/lib")
+endif()
+if(_torch_rpath)
+    set_target_properties(c_helpers PROPERTIES
+        BUILD_RPATH "${_torch_rpath}"
+        INSTALL_RPATH "${_torch_rpath}"
+    )
+endif()
+
 # Create a symlink from build/tests to ../tests for easier test execution
 add_custom_command(TARGET c_helpers POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E create_symlink
-        ${CMAKE_SOURCE_DIR}/tests
-        ${CMAKE_BINARY_DIR}/tests
+    ${CMAKE_SOURCE_DIR}/tests
+    ${CMAKE_BINARY_DIR}/tests
     COMMENT "Creating symlink to tests directory"
 )

@@ -1,328 +1,86 @@
 #!/bin/bash
-# Automated build script for ChessHacks C++ extensions
-# Uses all available CPU cores and handles Python version detection
+# ChessHacks environment bootstrapper.
+# - Verifies the bundled native module matches the active Python ABI.
+# - Downloads libtorch CPU/GPU if missing.
+# - Installs Python requirements.
+# - Writes an env helper file so `serve.py` can run immediately.
 
 set -euo pipefail
-export CHESSHACKS_MAX_DEPTH=6
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD_DIR="$SCRIPT_DIR/build"
-USER_LOCAL_BIN="$HOME/.local/bin"
-LOCAL_CMAKE_BIN=""
-if [[ -d "$USER_LOCAL_BIN" ]] && [[ ":$PATH:" != *":$USER_LOCAL_BIN:"* ]]; then
-    export PATH="$USER_LOCAL_BIN:$PATH"
+THIRD_PARTY_DIR="$SCRIPT_DIR/third_party"
+LIBTORCH_DIR="$BUILD_DIR/third_party/libtorch"
+ENV_FILE="$SCRIPT_DIR/.chesshacks_env"
+
+PYTHON_BIN="${PYTHON_BIN:-$(command -v python3 || true)}"
+if [[ -z "$PYTHON_BIN" ]]; then
+  echo "ERROR: python3 not found. Set PYTHON_BIN to your interpreter path." >&2
+  exit 1
 fi
 
-# Detect number of CPU cores
-if command -v nproc &>/dev/null; then
-    NUM_CORES=$(nproc)
-elif command -v sysctl &>/dev/null; then
-    if NUM_CORES=$(sysctl -n hw.ncpu 2>/dev/null); then
-        :
-    else
-        NUM_CORES=4
-    fi
-else
-    NUM_CORES=4
-fi
-
-echo "=================================================="
-echo "ChessHacks Automated Build Script"
-echo "=================================================="
-echo "Using $NUM_CORES CPU cores for compilation"
-echo ""
-
-cd "$SCRIPT_DIR"
-
-ENABLE_CUDA="${CHESSHACKS_ENABLE_CUDA:-0}"
-if [[ "$ENABLE_CUDA" != "0" && "$ENABLE_CUDA" != "OFF" ]]; then
-    echo "CUDA build requested via CHESSHACKS_ENABLE_CUDA"
-    CMAKE_CUDA_FLAG="-DCHESSHACKS_ENABLE_CUDA=ON"
-else
-    CMAKE_CUDA_FLAG="-DCHESSHACKS_ENABLE_CUDA=OFF"
-fi
-
-if [[ -z "${PYTHON_BIN:-}" ]]; then
-    PYTHON_BIN=$(command -v python3)
-fi
-
-PREBUILT_SO="${CHESSHACKS_PREBUILT_SO:-}"
-if [[ -z "$PREBUILT_SO" ]]; then
-    DEFAULT_SO="$SCRIPT_DIR/c_helpers.cpython-312-x86_64-linux-gnu.so"
-    if [[ -f "$DEFAULT_SO" ]]; then
-        PREBUILT_SO="$DEFAULT_SO"
-    fi
-fi
-
-if [[ -n "$PREBUILT_SO" ]]; then
-    echo "=================================================="
-    echo "Using prebuilt c_helpers shared object"
-    echo "Source: $PREBUILT_SO"
-    echo "Destination: $BUILD_DIR"
-    echo "=================================================="
-    mkdir -p "$BUILD_DIR"
-    TARGET_SO="$BUILD_DIR/$(basename "$PREBUILT_SO")"
-    cp "$PREBUILT_SO" "$TARGET_SO"
-    echo "Copied prebuilt module to $TARGET_SO"
-    echo "Verifying module import..."
-    if "$PYTHON_BIN" -c "import sys; sys.path.insert(0, '$BUILD_DIR'); import c_helpers; print('✓ Prebuilt module import successful')" 2>/dev/null; then
-        echo "=================================================="
-        echo "Prebuilt module ready!"
-        echo "=================================================="
-        exit 0
-    else
-        echo "⚠ Warning: Failed to import prebuilt module. Falling back to rebuild..."
-    fi
-fi
-
-UV_BIN=$(command -v uv || true)
-if [[ -n "$UV_BIN" ]]; then
-    echo "Using uv for pip commands: $UV_BIN pip"
-    PIP_RUN=("$UV_BIN" pip)
-else
-    echo "uv command not found; falling back to python -m pip"
-    PIP_RUN=("$PYTHON_BIN" -m pip)
-fi
-
-pip_install() {
-    "${PIP_RUN[@]}" "$@"
-}
-
-detect_local_cmake() {
-    local candidates=(
-        "$SCRIPT_DIR/cmake"
-        "$SCRIPT_DIR/cmake/bin/cmake"
-        "$SCRIPT_DIR/cmake-prebuilt/bin/cmake"
-        "$SCRIPT_DIR/cmake-precompiled/bin/cmake"
-        "$SCRIPT_DIR/prebuilt-cmake/bin/cmake"
-    )
-    if [[ -n "${CHESSHACKS_CMAKE_BIN:-}" && -x "${CHESSHACKS_CMAKE_BIN}" ]]; then
-        LOCAL_CMAKE_BIN="${CHESSHACKS_CMAKE_BIN}"
-        return
-    fi
-    for candidate in "${candidates[@]}"; do
-        if [[ -x "$candidate" ]]; then
-            LOCAL_CMAKE_BIN="$candidate"
-            return
-        fi
-    done
-    local found
-    found=$(find "$SCRIPT_DIR" -maxdepth 2 -type f -name "cmake" -perm -111 2>/dev/null | head -n 1 || true)
-    if [[ -n "$found" ]]; then
-        LOCAL_CMAKE_BIN="$found"
-    fi
-}
-
-download_cmake_release() {
-    local version="${CHESSHACKS_CMAKE_VERSION:-3.29.6}"
-    local archive_name="cmake-${version}-linux-x86_64.tar.gz"
-    local download_url="https://github.com/Kitware/CMake/releases/download/v${version}/${archive_name}"
-    local target_dir="$SCRIPT_DIR/third_party/cmake-${version}-linux-x86_64"
-
-    if [[ -x "$target_dir/bin/cmake" ]]; then
-        LOCAL_CMAKE_BIN="$target_dir/bin/cmake"
-        return
-    fi
-
-    echo "No CMake binary detected. Downloading ${archive_name}..."
-    mkdir -p "$SCRIPT_DIR/third_party"
-    local archive_path="$SCRIPT_DIR/third_party/${archive_name}"
-    if command -v curl >/dev/null 2>&1; then
-        curl -L "$download_url" -o "$archive_path"
-    elif command -v wget >/dev/null 2>&1; then
-        wget -O "$archive_path" "$download_url"
-    else
-        echo "ERROR: Neither curl nor wget is available to download CMake." >&2
-        exit 1
-    fi
-
-    tar -xzf "$archive_path" -C "$SCRIPT_DIR/third_party"
-    LOCAL_CMAKE_BIN="$target_dir/bin/cmake"
-}
-
-detect_local_cmake
-
-if [[ -n "$LOCAL_CMAKE_BIN" ]]; then
-    echo "Using bundled CMake binary: $LOCAL_CMAKE_BIN"
-else
-    download_cmake_release
-    echo "Downloaded CMake binary: $LOCAL_CMAKE_BIN"
-fi
-
-# Run tool checks in parallel for faster setup (skip cmake if bundled)
-if [[ -n "$LOCAL_CMAKE_BIN" ]]; then
-    CMAKE_BIN="$LOCAL_CMAKE_BIN"
-else
-    CMAKE_BIN=$(command -v cmake || true)
-fi
-
-if [[ -z "${CMAKE_BIN:-}" ]]; then
-    echo "ERROR: CMake binary not found. Install cmake or set CHESSHACKS_CMAKE_BIN." >&2
+if [[ ! -d "$SCRIPT_DIR/third_party/surge/src" ]]; then
+  if command -v git >/dev/null 2>&1; then
+    echo "Ensuring surge submodule is initialized..."
+    git -C "$SCRIPT_DIR" submodule update --init --recursive third_party/surge
+  else
+    echo "ERROR: git is required to fetch the surge submodule." >&2
     exit 1
+  fi
 fi
 
-if [[ ! -d "$SCRIPT_DIR/third_party/libtorch" ]]; then
-    curl -LO https://download.pytorch.org/libtorch/cpu/libtorch-shared-with-deps-2.9.1%2Bcpu.zip
-    npm install --silent --prefix "$HOME/.local/extractzip" extract-zip
-    node "$HOME/.local/extractzip/node_modules/extract-zip/cli.js" libtorch-shared-with-deps-2.9.1%2Bcpu.zip `pwd`/third_party/
-fi
-
-TORCH_DIR="$SCRIPT_DIR/third_party/libtorch"
-TORCH_CMAKE_DIR="$TORCH_DIR/share/cmake/Torch"
-if [[ ! -d "$TORCH_CMAKE_DIR" ]]; then
-    echo "ERROR: Vendored libtorch directory not found at $TORCH_CMAKE_DIR" >&2
-    echo "Please place the libtorch CPU distribution under third_party/libtorch." >&2
-    exit 1
-fi
-echo "Using vendored libtorch: $TORCH_DIR"
-export TORCH_CUDA_ARCH_LIST=${TORCH_CUDA_ARCH_LIST:-"8.0;8.6"}
-export LD_LIBRARY_PATH="$TORCH_DIR/lib:${LD_LIBRARY_PATH:-}"
-
-PYTHON_ROOT=$("$PYTHON_BIN" -c "import sys, pathlib; print(pathlib.Path(sys.executable).parent.parent)")
-PYTHON_INCLUDE=$("$PYTHON_BIN" -c "import sysconfig; print(sysconfig.get_path('include'))")
-
-# Detect Python library - handle both .so (Linux) and .dylib (macOS) extensions
-# Also handle framework-based installations on macOS
-PYTHON_LIBRARY=$("$PYTHON_BIN" -c "
-import sysconfig, pathlib, platform
-
-libdir = pathlib.Path(sysconfig.get_config_var('LIBDIR'))
-ldversion = sysconfig.get_config_var('LDVERSION')
-ldlibrary = sysconfig.get_config_var('LDLIBRARY')
-
-# On macOS, check for .dylib first, then framework
-if platform.system() == 'Darwin':
-    dylib = libdir / f'libpython{ldversion}.dylib'
-    if dylib.exists():
-        print(dylib)
-    else:
-        # Try framework path
-        framework_path = pathlib.Path(sysconfig.get_config_var('LIBPL')).parent.parent / ldlibrary
-        if framework_path.exists():
-            print(framework_path)
-        else:
-            # Fallback to static library
-            static_lib = libdir / f'libpython{ldversion}.a'
-            if static_lib.exists():
-                print(static_lib)
-            else:
-                # Last resort: construct expected path
-                print(libdir / f'libpython{ldversion}.dylib')
-else:
-    # Linux: look for .so
-    so_lib = libdir / f'libpython{ldversion}.so'
-    if so_lib.exists():
-        print(so_lib)
-    else:
-        # Fallback
-        print(libdir / f'libpython{ldversion}.so')
-")
-
-echo "Using Python interpreter: $PYTHON_BIN"
-echo "Python library: $PYTHON_LIBRARY"
-echo ""
-
-if command -v clang >/dev/null 2>&1 && command -v clang++ >/dev/null 2>&1; then
-    C_COMPILER="clang"
-    CXX_COMPILER="clang++"
-    COMPILER_DESC="Clang"
-else
-    C_COMPILER="gcc"
-    CXX_COMPILER="g++"
-    COMPILER_DESC="GCC"
-fi
-echo "Selected C compiler: $C_COMPILER ($COMPILER_DESC preference)"
-echo "Selected C++ compiler: $CXX_COMPILER"
-
-if command -v ninja >/dev/null 2>&1; then
-    CMAKE_GENERATOR="Ninja"
-    echo "Build generator: Ninja"
-else
-    CMAKE_GENERATOR="Unix Makefiles"
-    echo "Build generator: Unix Makefiles (make fallback)"
-fi
-echo ""
-
-echo "Installing Python dependencies from requirements.txt..."
-# Check if we're in a virtual environment
-if [[ -z "${VIRTUAL_ENV:-}" ]]; then
-    # Not in venv, try to install with --user or skip if it fails
-    if ! pip_install --user -r "$SCRIPT_DIR/requirements.txt" 2>/dev/null; then
-        echo "⚠ Warning: Failed to install requirements (may already be installed or need venv)"
-        echo "Continuing with build..."
-    else
-        echo "✓ Requirements installed"
-    fi
-else
-    # In venv, normal install
-    if ! pip_install -r "$SCRIPT_DIR/requirements.txt"; then
-        echo "⚠ Warning: Failed to install requirements (may already be installed)"
-        echo "Continuing with build..."
-    else
-        echo "✓ Requirements installed"
-    fi
-fi
-echo ""
-
-if [[ "${1:-}" == "clean" ]]; then
-    echo "Cleaning old build files..."
-    rm -rf "$BUILD_DIR"
-    echo "Clean complete."
-    echo ""
-fi
-
-if [[ -f "$BUILD_DIR/CMakeCache.txt" ]]; then
-    CURRENT_GENERATOR=$(grep -m1 "^CMAKE_GENERATOR:" "$BUILD_DIR/CMakeCache.txt" | cut -d= -f2)
-    if [[ "$CURRENT_GENERATOR" != "$CMAKE_GENERATOR" ]]; then
-        echo "Generator changed ($CURRENT_GENERATOR -> $CMAKE_GENERATOR); clearing build directory..."
-        rm -rf "$BUILD_DIR"
-    fi
-fi
+echo "==============================================="
+echo "ChessHacks environment bootstrap"
+echo "Python: $PYTHON_BIN"
+echo "Root  : $SCRIPT_DIR"
+echo "==============================================="
 
 mkdir -p "$BUILD_DIR"
-cd "$BUILD_DIR"
 
-echo "Configuring CMake..."
-"$CMAKE_BIN" -S "$SCRIPT_DIR" -B . \
-      -G "$CMAKE_GENERATOR" \
-      -DCMAKE_C_COMPILER="$C_COMPILER" \
-      -DCMAKE_CXX_COMPILER="$CXX_COMPILER" \
-      -DCMAKE_BUILD_TYPE=Release \
-      "$CMAKE_CUDA_FLAG" \
-      -DTorch_DIR="$TORCH_CMAKE_DIR" \
-      -DPython3_EXECUTABLE="$PYTHON_BIN" \
-      -DPython3_ROOT_DIR="$PYTHON_ROOT" \
-      -DPython3_INCLUDE_DIR="$PYTHON_INCLUDE" \
-      -DPython3_LIBRARY="$PYTHON_LIBRARY" \
-      -DPython_EXECUTABLE="$PYTHON_BIN" \
-      -DPython_ROOT_DIR="$PYTHON_ROOT" \
-      -DPython_INCLUDE_DIR="$PYTHON_INCLUDE" \
-      -DPython_LIBRARY="$PYTHON_LIBRARY" \
-      -DPython_FIND_VIRTUALENV=FIRST \
-      -DPython_FIND_STRATEGY=LOCATION
-echo ""
+echo "libtorch will be downloaded automatically by CMake via FetchContent."
 
-echo "Building C++ extensions..."
-"$CMAKE_BIN" --build . -j"$NUM_CORES"
-echo ""
+echo "Installing Python requirements via pip..."
+"$PYTHON_BIN" -m pip install -r "$SCRIPT_DIR/requirements.txt"
 
-SO_FILE=$(find "$BUILD_DIR" -maxdepth 1 -name "c_helpers*.so" -type f | head -1)
-if [[ -z "$SO_FILE" ]]; then
-    echo "ERROR: Build succeeded but c_helpers*.so not found!"
-    exit 1
-fi
+cat > "$ENV_FILE" <<'EOF'
+# Source this file before running serve.py
+export CHESSHACKS_ROOT="$SCRIPT_DIR"
+export PYTHON_BIN="$PYTHON_BIN"
+export PYTHONPATH="$SCRIPT_DIR:$SCRIPT_DIR/src:$BUILD_DIR:\${PYTHONPATH:-}"
+export TORCH_HOME="$BUILD_DIR/third_party"
 
-echo "Build successful: $SO_FILE"
-echo ""
-echo "Verifying module can be imported..."
-if "$PYTHON_BIN" -c "import sys; sys.path.insert(0, '$BUILD_DIR'); import c_helpers; print('✓ Module imported successfully')" 2>/dev/null; then
-    echo "✓ Build verification passed"
+CHESSHACKS_LIBTORCH_LIB="$LIBTORCH_DIR/lib"
+if [[ -n "\${LD_LIBRARY_PATH:-}" ]]; then
+  _ch_clean_ld="\$("\$PYTHON_BIN" - <<'PY'
+import os
+from pathlib import Path
+needle = Path(os.environ.get("CHESSHACKS_LIBTORCH_LIB", "")).resolve()
+paths = []
+for entry in os.environ.get("LD_LIBRARY_PATH", "").split(":"):
+    chunks = [part for part in entry.strip().split() if part]
+    for chunk in chunks:
+        if Path(chunk).resolve() == needle:
+            continue
+        paths.append(chunk)
+print(":".join(paths))
+PY
+)"
+  if [[ -n "\$_ch_clean_ld" ]]; then
+    export LD_LIBRARY_PATH="\$_ch_clean_ld"
+  else
+    unset LD_LIBRARY_PATH
+  fi
+  unset _ch_clean_ld
 else
-    echo "⚠ Warning: Module built but import verification failed."
+  unset LD_LIBRARY_PATH
 fi
+unset CHESSHACKS_LIBTORCH_LIB
+EOF
 
 echo ""
-echo "=================================================="
-echo "Build Complete!"
-echo "=================================================="
-echo "Module location: $SO_FILE"
-echo ""
+echo " Environment file written to $ENV_FILE"
+echo "Next steps:"
+echo "  source $ENV_FILE"
+echo "  python serve.py"
+echo "==============================================="
+

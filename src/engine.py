@@ -6,21 +6,12 @@ These are not directly needed for the game connection but provide useful
 functionality for testing and development.
 """
 
-import os
-import sys
 import time
 
 import chess
 
-if __package__ in (None, ""):
-    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    if project_root not in sys.path:
-        sys.path.insert(0, project_root)
-    from env_manager import get_env_config
-    from native_loader import ensure_c_helpers
-else:
-    from .env_manager import get_env_config
-    from .native_loader import ensure_c_helpers
+from env_manager import get_env_config
+from native_loader import ensure_c_helpers
 
 c_helpers = ensure_c_helpers()
 ENV_CONFIG = get_env_config()
@@ -67,6 +58,11 @@ def _board_to_bitboard_state(board: chess.Board) -> c_helpers.BitboardState:
     )
 
 
+def bitboard_from_fen(fen: str) -> c_helpers.BitboardState:
+    """Convert a FEN string to a BitboardState."""
+    return c_helpers.BitboardState(fen)
+
+
 def has_cuda():
     """Check if CUDA is available using torch"""
     try:
@@ -95,46 +91,12 @@ def get_cuda_status():
         return f"CUDA detection error: {e}"
 
 
-def nnue_evaluate(fen: str) -> int:
-    """Evaluate a position using NNUE if available, otherwise PST."""
-    return c_helpers.evaluate(fen)
-
-
-def alpha_beta_basic(
+def alpha_beta(
     fen: str,
     depth: int,
     alpha: int = None,
     beta: int = None,
     maximizing_player: bool = None,
-    evaluate=None,
-):
-    """
-    Call C++ alpha_beta_basic function - bare bones alpha-beta with no optimizations
-    """
-    if alpha is None:
-        alpha = c_helpers.MIN
-    if beta is None:
-        beta = c_helpers.MAX
-    if maximizing_player is None:
-        parts = fen.split()
-        maximizing_player = len(parts) > 1 and parts[1] == "w"
-    if evaluate is None:
-        return c_helpers.alpha_beta_basic_builtin(
-            fen, depth, alpha, beta, maximizing_player
-        )
-
-    return c_helpers.alpha_beta_basic(
-        fen, depth, alpha, beta, maximizing_player, evaluate
-    )
-
-
-def alpha_beta_optimized(
-    fen: str,
-    depth: int,
-    alpha: int = None,
-    beta: int = None,
-    maximizing_player: bool = None,
-    evaluate=None,
     tt=None,
     num_threads: int = DEFAULT_SEARCH_THREADS,
     killers=None,
@@ -142,7 +104,7 @@ def alpha_beta_optimized(
     counters=None,
 ):
     """
-    Call C++ alpha_beta_optimized function - full optimizations (TT, move ordering, etc.)
+    Call C++ alpha_beta function - full optimizations (TT, move ordering, etc.)
     """
     if alpha is None:
         alpha = c_helpers.MIN
@@ -151,27 +113,13 @@ def alpha_beta_optimized(
     if maximizing_player is None:
         parts = fen.split()
         maximizing_player = len(parts) > 1 and parts[1] == "w"
-    if evaluate is None:
-        return c_helpers.alpha_beta_optimized_builtin(
-            fen,
-            depth,
-            alpha,
-            beta,
-            maximizing_player,
-            tt,
-            num_threads,
-            killers,
-            history,
-            counters,
-        )
-
-    return c_helpers.alpha_beta_optimized(
-        fen,
+    state = bitboard_from_fen(fen)
+    return c_helpers.alpha_beta(
+        state,
         depth,
         alpha,
         beta,
         maximizing_player,
-        evaluate,
         tt,
         num_threads,
         killers,
@@ -186,7 +134,6 @@ def alpha_beta_cuda(
     alpha: int = None,
     beta: int = None,
     maximizing_player: bool = None,
-    evaluate=None,
     tt=None,
     killers=None,
     history=None,
@@ -202,16 +149,13 @@ def alpha_beta_cuda(
     if maximizing_player is None:
         parts = fen.split()
         maximizing_player = len(parts) > 1 and parts[1] == "w"
-    if evaluate is None:
-        evaluate = c_helpers.evaluate_material
-
+    state = bitboard_from_fen(fen)
     return c_helpers.alpha_beta_cuda(
-        fen,
+        state,
         depth,
         alpha,
         beta,
         maximizing_player,
-        evaluate,
         tt,
         killers,
         history,
@@ -276,26 +220,16 @@ def search_position(
         except Exception as e:
             # CUDA failed, fall back to CPU
             print(f"CUDA search failed ({e}), falling back to CPU")
-            return alpha_beta_optimized(
-                fen,
-                depth,
-                tt=tt,
-                num_threads=num_threads,
-                killers=killers,
-                history=history,
-                counters=counters,
-            )
-    else:
-        # Use optimized CPU search with all features
-        return alpha_beta_optimized(
-            fen,
-            depth,
-            tt=tt,
-            num_threads=num_threads,
-            killers=killers,
-            history=history,
-            counters=counters,
-        )
+    # Use optimized CPU search with all features
+    return alpha_beta(
+        fen,
+        depth,
+        tt=tt,
+        num_threads=num_threads,
+        killers=killers,
+        history=history,
+        counters=counters,
+    )
 
 
 def test_engine():
@@ -328,12 +262,12 @@ def test_engine():
     print(f"Time: {elapsed:.3f}s")
     print(f"TT entries: {tt.size()}")
     print("Features active:")
-    print("  ✓ Transposition table")
-    print("  ✓ Move ordering (TT + MVV-LVA + promotions)")
-    print("  ✓ Quiescence search")
-    print("  ✓ Iterative deepening")
+    print("  Transposition table")
+    print("  Move ordering (TT + MVV-LVA + promotions)")
+    print("  Quiescence search")
+    print("  Iterative deepening")
     if not use_cuda:
-        print("  ✓ Parallel search")
+        print("  Parallel search")
 
 
 if __name__ == "__main__":

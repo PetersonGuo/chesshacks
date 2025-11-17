@@ -1,4 +1,0 @@
-# Project exclude paths
-/cmake-build-debug/
-/cmake-build-release/
-main.cpp

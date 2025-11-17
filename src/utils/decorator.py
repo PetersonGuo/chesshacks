@@ -34,11 +34,12 @@ class ChessManager:
         The function bound to the entrypoint will be called when its time to make a move.
         The function will be passed the game context and is expected to return a Move object.
         """
+
         def wrapper(ctx: GameContext):
             # Forward the provided context to the model function
             return func(ctx)
 
-        if (self._func is not None):
+        if self._func is not None:
             raise ValueError("Entrypoint cannot be set twice")
 
         self._func = wrapper
@@ -54,7 +55,7 @@ class ChessManager:
         def wrapper(ctx: GameContext):
             func(ctx)
 
-        if (self._reset_func is not None):
+        if self._reset_func is not None:
             raise ValueError("Reset handler cannot be set twice")
 
         self._reset_func = wrapper
@@ -99,7 +100,7 @@ class ChessManager:
 
     def get_model_move(self) -> tuple[Move, dict[Move, float], str]:
 
-        if (self._func is None):
+        if self._func is None:
             raise ValueError("No entrypoint set")
 
         buffer = io.StringIO()
@@ -121,15 +122,14 @@ class ChessManager:
     def update_move_probabilities(self, probabilities: dict[Move, float]):
         self._move_probabilities = probabilities
 
+
 # Lie to lsp's about type of the decorator
 
 
 @dataclass
 class ChessManagerType:
-    entrypoint: Callable[[Callable[[GameContext], Move]],
-                         Callable[[GameContext], Move]]
-    reset: Callable[[Callable[[GameContext], None]],
-                    Callable[[GameContext], None]]
+    entrypoint: Callable[[Callable[[GameContext], Move]], Callable[[GameContext], Move]]
+    reset: Callable[[Callable[[GameContext], None]], Callable[[GameContext], None]]
 
 
 chess_manager: ChessManagerType = ChessManager()
