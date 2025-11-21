@@ -20,7 +20,7 @@ pytest==9.0.1
 
 # NNUE Training and CUDA detection dependencies
 # Pin torch to match vendored libtorch (CMake downloads 2.3.0)
-torch==2.3.0
+torch==2.8.0
 numpy>=1.24.0
 tqdm>=4.65.0
 requests>=2.31.0
